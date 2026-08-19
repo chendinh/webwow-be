@@ -1,0 +1,476 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────── ENUMS ───────────
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ProjectStatus {
+  PENDING_ANALYSIS
+  ANALYZING
+  ANALYSIS_FAILED
+  ACTIVE
+  ARCHIVED
+}
+
+enum CompatibilityTier {
+  FULL_AI_SUPPORT
+  AI_ASSISTED
+  LIMITED_SUPPORT
+  UNSUPPORTED
+}
+
+enum IssueType {
+  BUG
+  FEATURE
+  REFACTOR
+  PERFORMANCE
+  SECURITY
+  DEPENDENCY
+  OTHER
+}
+
+enum IssuePriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum IssueStatus {
+  ANALYZING
+  ANALYSIS_FAILED
+  PLAN_READY
+  APPROVED
+  REJECTED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AITaskStatus {
+  QUEUED
+  ANALYZING
+  PLANNING
+  WAITING_APPROVAL
+  APPROVED
+  PREPARING
+  CODING
+  TESTING
+  FIXING
+  REVIEWING
+  CREATING_PR
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ComplexityLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum PullRequestStatus {
+  OPEN
+  CLOSED
+  MERGED
+}
+
+enum ActivityEventType {
+  STATE_CHANGE
+  AI_CALL
+  FILE_CHANGED
+  COMMAND_EXECUTED
+  TEST_RESULT
+  PR_CREATED
+  APPROVAL_DECISION
+  ERROR
+}
+
+// ─────────── MODELS ───────────
+
+model User {
+  id                  String               @id @default(uuid())
+  email               String               @unique
+  passwordHash        String?              // null for OAuth-only accounts
+  emailVerified       Boolean              @default(false)
+  emailVerifyToken    String?
+  resetPasswordToken  String?
+  resetPasswordExpiry DateTime?
+  failedLoginAttempts Int                  @default(0)
+  lockedUntil         DateTime?
+  githubId            String?              @unique
+  githubUsername      String?
+  name                String?
+  avatarUrl           String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  deletedAt           DateTime?
+
+  memberships         OrganizationMember[]
+  refreshTokens       RefreshToken[]
+
+  @@index([email])
+  @@index([githubId])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([token])
+  @@index([userId])
+}
+
+model Organization {
+  id          String               @id @default(uuid())
+  name        String
+  slug        String               @unique
+  logoUrl     String?
+  usageCap    Float                @default(500) // monthly USD cap
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  deletedAt   DateTime?
+
+  members     OrganizationMember[]
+  projects    Project[]
+  issues      Issue[]
+  aiTasks     AITask[]
+  usages      Usage[]
+  activities  ActivityLog[]
+
+  @@index([slug])
+}
+
+model OrganizationMember {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String
+  role           OrgRole
+  invitedBy      String?
+  inviteToken    String?
+  inviteExpiry   DateTime?
+  joinedAt       DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([inviteToken])
+}
+
+model Project {
+  id                   String          @id @default(uuid())
+  organizationId       String
+  name                 String
+  description          String?
+  githubRepoFullName   String          // "owner/repo"
+  githubInstallationId String
+  defaultBranch        String          @default("main")
+  status               ProjectStatus   @default(PENDING_ANALYSIS)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  deletedAt            DateTime?
+
+  organization         Organization    @relation(fields: [organizationId], references: [id])
+  analysis             ProjectAnalysis?
+  issues               Issue[]
+  aiTasks              AITask[]
+  pullRequests         PullRequest[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([organizationId, status])
+}
+
+model ProjectAnalysis {
+  id                 String            @id @default(uuid())
+  projectId          String            @unique
+  organizationId     String
+
+  // Technical profile
+  primaryLanguage    String?
+  frameworks         String[]
+  databases          String[]
+  buildTools         String[]
+  packageManager     String?
+
+  // Compatibility
+  compatibilityScore Int               // 0-100
+  compatibilityTier  CompatibilityTier
+  compatibilityNotes Json              // [{factor, score, note, suggestion}]
+
+  // Codebase summary
+  directoryStructure Json              // Masked, no secrets
+  mainDependencies   Json              // [{name, version, purpose}]
+  detectedModules    Json              // [{name, path, type}]
+  detectedEndpoints  Json?
+  testCoverage       Float?
+  buildScripts       Json?             // {test, build, lint, format}
+  knownIssues        Json?
+
+  analyzedAt         DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  project            Project           @relation(fields: [projectId], references: [id])
+
+  @@index([organizationId])
+  @@index([projectId])
+}
+
+model GitHubInstallation {
+  id                 String    @id @default(uuid())
+  organizationId     String    @unique
+  installationId     String    @unique
+  encryptedToken     String    // AES-256 encrypted installation token
+  tokenExpiresAt     DateTime?
+  githubAccountId    String
+  githubAccountLogin String
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([organizationId])
+  @@index([installationId])
+}
+
+model Issue {
+  id                 String          @id @default(uuid())
+  organizationId     String
+  projectId          String
+  createdBy          String          // userId
+
+  title              String
+  description        String          // Customer natural language
+  type               IssueType
+  priority           IssuePriority
+  status             IssueStatus     @default(ANALYZING)
+
+  // AI Analysis results
+  aiDiagnosis        String?
+  affectedFiles      String[]
+  riskLevel          ComplexityLevel?
+  complexity         ComplexityLevel?
+  feasibilityNotes   String?
+
+  // Plan
+  implementationPlan Json?           // ImplementationPlan JSON
+
+  // Rejection
+  rejectionReason    String?
+
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  deletedAt          DateTime?
+
+  organization       Organization    @relation(fields: [organizationId], references: [id])
+  project            Project         @relation(fields: [projectId], references: [id])
+  costEstimate       CostEstimate?
+  aiTasks            AITask[]
+  pullRequests       PullRequest[]
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([status])
+  @@index([organizationId, projectId, status])
+  @@index([createdAt])
+}
+
+model CostEstimate {
+  id                  String   @id @default(uuid())
+  issueId             String   @unique
+  organizationId      String
+
+  // Internal — NEVER exposed to customer
+  internalAiCost      Float    // USD
+  internalTokens      Int
+
+  // Customer-facing
+  customerPriceMin    Float
+  customerPriceBase   Float
+  customerPriceMax    Float
+  developerComparison Float?   // equivalent cost if hiring developer
+
+  expiresAt           DateTime
+  isExpired           Boolean  @default(false)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  issue               Issue    @relation(fields: [issueId], references: [id])
+
+  @@index([issueId])
+  @@index([organizationId])
+  @@index([expiresAt])
+}
+
+model AITask {
+  id             String       @id @default(uuid())
+  organizationId String
+  projectId      String
+  issueId        String
+
+  status         AITaskStatus @default(QUEUED)
+  currentStep    String?
+
+  // Sandbox execution
+  sandboxId      String?
+  branchName     String?      // ai/{issueId}-{slug}
+
+  // Results
+  filesChanged   String[]
+  testResult     Json?        // {passed, failed, coverage}
+  buildResult    Json?        // {success, output}
+  reviewSummary  String?
+
+  // Cost tracking
+  actualTokens   Int          @default(0)
+  actualCost     Float        @default(0)
+
+  startedAt      DateTime?
+  completedAt    DateTime?
+  failedAt       DateTime?
+  failureReason  String?      // Customer-friendly message
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  project        Project      @relation(fields: [projectId], references: [id])
+  issue          Issue        @relation(fields: [issueId], references: [id])
+  steps          AITaskStep[]
+  pullRequests   PullRequest[]
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([issueId])
+  @@index([status])
+  @@index([organizationId, status])
+  @@index([createdAt])
+}
+
+model AITaskStep {
+  id          String    @id @default(uuid())
+  taskId      String
+  stepName    String    // e.g. "clone_repo", "run_tests"
+  status      String    // PENDING | RUNNING | SUCCESS | FAILED
+  command     String?
+  output      String?
+  exitCode    Int?
+  durationMs  Int?
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  task        AITask    @relation(fields: [taskId], references: [id])
+
+  @@index([taskId])
+}
+
+model PullRequest {
+  id             String            @id @default(uuid())
+  organizationId String
+  projectId      String
+  issueId        String
+  taskId         String
+
+  githubPrNumber Int
+  githubPrUrl    String
+  title          String
+  branchName     String
+  status         PullRequestStatus @default(OPEN)
+
+  mergedAt       DateTime?
+  closedAt       DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  issue          Issue             @relation(fields: [issueId], references: [id])
+  task           AITask            @relation(fields: [taskId], references: [id])
+  project        Project           @relation(fields: [projectId], references: [id])
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([issueId])
+  @@index([taskId])
+  @@index([status])
+}
+
+model ActivityLog {
+  id              String            @id @default(uuid())
+  organizationId  String
+  projectId       String?
+  issueId         String?
+  taskId          String?
+
+  eventType       ActivityEventType
+  agentType       String?           // AIAnalysisAgent | PlanningAgent | CodingAgent
+  aiModel         String?           // gpt-4o | claude-3-5-sonnet
+  tokensUsed      Int?
+  estimatedCost   Float?
+  durationMs      Int?
+
+  // Customer-friendly log (shown in UI)
+  friendlyMessage String
+  // Technical detail (internal only)
+  technicalDetail Json?
+
+  oldStatus       String?
+  newStatus       String?
+  actorId         String?           // userId or "system"
+  ipAddress       String?
+
+  createdAt       DateTime          @default(now())
+
+  organization    Organization      @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([issueId])
+  @@index([taskId])
+  @@index([createdAt])
+  @@index([organizationId, createdAt])
+}
+
+model Usage {
+  id             String       @id @default(uuid())
+  organizationId String
+  year           Int
+  month          Int          // 1-12
+
+  totalTasks     Int          @default(0)
+  totalTokens    Int          @default(0)
+  internalCost   Float        @default(0) // NEVER shown to customer
+  customerCost   Float        @default(0)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, year, month])
+  @@index([organizationId])
+  @@index([organizationId, year, month])
+}

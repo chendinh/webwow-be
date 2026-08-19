@@ -1,0 +1,40 @@
+version: '3.8'
+
+networks:
+  sandbox-net:
+    driver: bridge
+    # Allow outbound connections to GitHub and package registries
+    # Production deployments should add iptables rules to block:
+    #   - 10.0.0.0/8 (internal)
+    #   - 172.16.0.0/12 (internal)
+    #   - 192.168.0.0/16 (internal)
+    # Only allow outbound to:
+    #   - github.com (443)
+    #   - api.github.com (443)
+    #   - registry.npmjs.org (443)
+    #   - pypi.org (443)
+
+services:
+  # Template for sandbox containers (not run directly — used as config reference)
+  sandbox-template:
+    image: ai-sandbox:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      - sandbox-net
+    # Resource limits per container (R12.1)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4g
+    # Security: read-only filesystem except /workspace and /tmp
+    read_only: false
+    tmpfs:
+      - /tmp:size=1g
+    # No privileged mode
+    privileged: false
+    # Environment
+    environment:
+      - NODE_ENV=sandbox
