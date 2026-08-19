@@ -59,9 +59,9 @@ export class AIAnalysisWorker extends WorkerHost {
   }
 
   async process(job: Job<AIAnalysisJobData>): Promise<void> {
-    const { issueId, organizationId } = job.data;
+    const { issueId, organizationId, planningOnly } = job.data;
 
-    this.logger.log(`Starting AI analysis for issue ${issueId}`);
+    this.logger.log(`Starting AI analysis for issue ${issueId}${planningOnly ? ' (planning-only)' : ''}`);
 
     try {
       // ── Step 1: Load Issue, Project, and ProjectAnalysis from DB ────────
@@ -84,6 +84,11 @@ export class AIAnalysisWorker extends WorkerHost {
         select: { aiOutputLanguage: true },
       });
       const language = org?.aiOutputLanguage ?? 'en';
+
+      // ── PLANNING-ONLY PATH: skip AnalysisAgent, use existing analysis ────
+      if (planningOnly) {
+        return await this.runPlanningOnly(issue, projectAnalysis, organizationId, language);
+      }
 
       // ── Step 2: Build ProjectContext for AnalysisAgent ──────────────────
       const rawDirectoryStructure = projectAnalysis?.directoryStructure as {
@@ -321,5 +326,120 @@ export class AIAnalysisWorker extends WorkerHost {
 
       throw err;
     }
+  }
+
+  // ── Planning-only path ────────────────────────────────────────────────────
+  // Called when user has already selected an implementation option.
+  // Skips AnalysisAgent and uses existing analysis results from DB.
+
+  private async runPlanningOnly(
+    issue: Awaited<ReturnType<typeof this.prisma.issue.findUnique>> & {
+      project?: { githubRepoFullName: string; defaultBranch: string } | null;
+    },
+    projectAnalysis: Awaited<ReturnType<typeof this.prisma.projectAnalysis.findUnique>>,
+    organizationId: string,
+    language: string,
+  ): Promise<void> {
+    if (!issue) return;
+    const issueId = issue.id;
+
+    this.logger.log(`Running planning-only for issue ${issueId}, selected option: ${issue.selectedOptionId}`);
+
+    // Reconstruct analysisResult from stored DB fields
+    const storedOptions = (issue.implementationOptions as unknown as Array<{
+      id: string;
+      affectedFiles: string[];
+      [key: string]: unknown;
+    }>) ?? [];
+
+    // Use selected option's affected files if available
+    const selectedOption = storedOptions.find(o => o.id === issue.selectedOptionId);
+    const affectedFiles = selectedOption?.affectedFiles?.filter((f: string) => !f.endsWith('/')) ?? issue.affectedFiles ?? [];
+
+    const analysisResult = {
+      affectedFiles,
+      aiDiagnosis: issue.aiDiagnosis ?? '',
+      plainDiagnosis: issue.plainDiagnosis ?? '',
+      riskLevel: (issue.riskLevel ?? 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
+      complexity: (issue.complexity ?? 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL',
+      feasibilityNotes: issue.feasibilityNotes ?? '',
+      estimatedTokens: 1000,
+      relatedModules: [],
+    };
+
+    // Fetch file contents for selected option's affected files
+    const fileContents: Record<string, string> = {};
+    if (issue.project && affectedFiles.length > 0) {
+      const [owner, repo] = issue.project.githubRepoFullName.split('/');
+      try {
+        const token = await this.githubService.getDecryptedToken(organizationId);
+        const octokit = new Octokit({ auth: token });
+        await Promise.all(
+          affectedFiles.slice(0, MAX_FILES_TO_READ).map(async (filePath) => {
+            const content = await fetchFileContent(octokit, owner, repo, filePath);
+            if (content) {
+              fileContents[filePath] = content.length > MAX_FILE_CONTENT_CHARS
+                ? content.slice(0, MAX_FILE_CONTENT_CHARS) + '\n... [truncated]'
+                : content;
+            }
+          }),
+        );
+      } catch (e) {
+        this.logger.warn(`Could not read files for planning-only issue ${issueId}: ${String(e)}`);
+      }
+    }
+
+    // Run PlanningAgent
+    const { result: implementationPlan, tokensUsed: planningTokens, costUsd: planningCost } =
+      await this.planningAgent.plan(
+        { title: issue.title, description: issue.description, type: issue.type },
+        analysisResult,
+        language,
+        fileContents,
+      );
+
+    this.logger.log(`Planning-only complete for ${issueId}: ${implementationPlan.steps.length} steps`);
+
+    // Pricing
+    const costEstimateData = this.pricingService.calculate({
+      complexity: analysisResult.complexity,
+      estimatedTokens: implementationPlan.estimatedTokens,
+      estimatedSteps: implementationPlan.steps.length,
+      risk: analysisResult.riskLevel,
+      projectSizeKb: 0,
+    });
+
+    const baselineCostIncluded = (projectAnalysis?.baselineCostUsd ?? 0) / BASELINE_COST_ISSUE_DIVISOR;
+
+    await this.prisma.$transaction([
+      this.prisma.issue.update({
+        where: { id: issueId },
+        data: {
+          status: 'PLAN_READY',
+          implementationPlan: implementationPlan as unknown as Prisma.JsonObject,
+        },
+      }),
+      this.prisma.costEstimate.upsert({
+        where: { issueId },
+        create: { issueId, organizationId, baselineCostIncluded, ...costEstimateData },
+        update: { baselineCostIncluded, ...costEstimateData },
+      }),
+    ]);
+
+    await this.prisma.activityLog.create({
+      data: {
+        organizationId,
+        issueId,
+        projectId: issue.projectId,
+        eventType: 'AI_CALL',
+        agentType: 'PlanningAgent',
+        friendlyMessage: `Lên kế hoạch theo phương án đã chọn. Token: ${planningTokens}. Chi phí: $${planningCost.toFixed(4)}.`,
+        tokensUsed: planningTokens,
+        estimatedCost: planningCost,
+        actorId: 'system',
+      },
+    });
+
+    this.logger.log(`Planning-only completed for issue ${issueId}`);
   }
 }

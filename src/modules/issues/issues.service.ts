@@ -212,13 +212,14 @@ export class IssuesService {
       },
     });
 
-    // Enqueue planning-only job (analysis is already done)
+    // Enqueue planning-only job (analysis is already done, just need to plan with selected option)
     this.queueService
       .enqueueAIAnalysis({
         issueId,
         projectId: issue.projectId,
         organizationId,
         retryCount: 0,
+        planningOnly: true,
       })
       .catch(() => {});
 

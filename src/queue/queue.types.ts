@@ -11,6 +11,8 @@ export interface AIAnalysisJobData {
   projectId: string;
   organizationId: string;
   retryCount: number;
+  /** When true: skip AnalysisAgent, use existing analysis result, run PlanningAgent only */
+  planningOnly?: boolean;
 }
 
 export interface AICodingJobData {
