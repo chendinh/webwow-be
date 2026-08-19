@@ -56,11 +56,12 @@ export class QueueService {
   }
 
   // AI_CODING concurrency limited to 5 (enforced in the @Processor decorator on the worker)
+  // Only 1 attempt — worker handles its own retry logic internally
   async enqueueAICoding(data: AICodingJobData): Promise<string> {
     const job = await this.aiCodingQueue.add(
       QUEUES.AI_CODING,
       data,
-      this.defaultOptions,
+      { ...this.defaultOptions, attempts: 1 },
     );
     return job.id as string;
   }

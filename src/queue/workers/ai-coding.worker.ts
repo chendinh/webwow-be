@@ -173,21 +173,46 @@ export class AICodingWorker extends WorkerHost {
       }
 
       // ── Step 5: Create AI branch ──────────────────────────────────────────
-      // Branch name must match /^ai\/[a-z0-9]+(-[a-z0-9]+)*$/
-      const branchSlug = issue.title
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')   // replace non-alphanumeric sequences with dash
-        .replace(/^-+|-+$/g, '')         // trim leading/trailing dashes
-        .substring(0, 30)
-        .replace(/-+$/, '');             // trim trailing dashes after substring
-
+      // Branch name: use only task short ID to avoid Unicode/length issues
+      // Format: ai/{8-char-taskId} — safe, unique, no special chars
       const issueShortId = issue.id.substring(0, 8);
-      branchName = `ai/${issueShortId}-${branchSlug}`;
+      const taskShortId = taskId.substring(0, 8);
+      branchName = `ai/${issueShortId}-${taskShortId}`;
 
-      // Clean up any stale git lock files left by pre-flight checks
+      // Clean up stale refs/heads/ai directory and lock files
+      const localWorkdirForCleanup = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
+        .localWorkdirs?.get(containerId);
+      if (localWorkdirForCleanup) {
+        const gitRefsDir = path.join(localWorkdirForCleanup, 'workspace', 'repo', '.git', 'refs', 'heads');
+        try {
+          // Remove entire ai/ subdirectory under refs/heads to clear any corrupt state
+          const aiRefsDir = path.join(gitRefsDir, 'ai');
+          if (fs.existsSync(aiRefsDir)) {
+            fs.rmSync(aiRefsDir, { recursive: true, force: true });
+            this.logger.debug(`Cleaned up stale ai refs dir: ${aiRefsDir}`);
+          }
+          // Also remove any .lock files
+          const removeLocks = (dir: string) => {
+            if (!fs.existsSync(dir)) return;
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const fullPath = path.join(dir, entry.name);
+              if (entry.isDirectory()) removeLocks(fullPath);
+              else if (entry.name.endsWith('.lock')) { fs.unlinkSync(fullPath); }
+            }
+          };
+          removeLocks(path.join(localWorkdirForCleanup, 'workspace', 'repo', '.git'));
+        } catch { /* ignore */ }
+      }
+
+      // Also delete remote tracking refs ai/* to prevent conflict with local branch creation
       await this.sandbox.exec(
         containerId,
-        `find /workspace/repo/.git -name '*.lock' -delete 2>/dev/null || true`,
+        `cd /workspace/repo && git for-each-ref --format='%(refname:short)' refs/remotes/origin/ai/ | xargs -I{} git branch -dr {} 2>/dev/null || true`,
+      );
+      // Remove packed-refs entries for ai/ branches
+      await this.sandbox.exec(
+        containerId,
+        `cd /workspace/repo && sed -i.bak '/refs\\/heads\\/ai\\//d' .git/packed-refs 2>/dev/null || true`,
       );
 
       const checkoutResult = await this.sandbox.exec(
@@ -317,12 +342,6 @@ export class AICodingWorker extends WorkerHost {
       let lastTestOutput = '';
 
       while (!checksPass && fixAttempts <= MAX_FIX_ATTEMPTS) {
-        if (fixAttempts > 0) {
-          await this.aiTasksService.transitionStatus(taskId, AITaskStatus.FIXING, organizationId, {
-            currentStep: `Sửa lỗi (lần ${fixAttempts}/${MAX_FIX_ATTEMPTS})`,
-          });
-        }
-
         const testResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
         checksPass = testResult.passed;
         lastTestOutput = testResult.output;
@@ -345,6 +364,10 @@ export class AICodingWorker extends WorkerHost {
               `Build/test thất bại sau ${MAX_FIX_ATTEMPTS} lần sửa. Output: ${lastTestOutput.substring(0, 500)}`,
             );
           }
+          // Must go through FIXING before re-entering TESTING
+          await this.aiTasksService.transitionStatus(taskId, AITaskStatus.FIXING, organizationId, {
+            currentStep: `Sửa lỗi lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
+          });
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
             currentStep: `Chạy lại kiểm tra (lần ${fixAttempts + 1})`,
           });
