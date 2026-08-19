@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -33,11 +33,11 @@ import { AITasksModule } from '../modules/ai-tasks/ai-tasks.module';
       { name: QUEUES.PR_CREATION },
       { name: QUEUES.NOTIFICATION },
     ),
-    ProjectsModule,
+    forwardRef(() => ProjectsModule),
     GithubModule,
     AiCoreModule.register(),
     PricingModule,
-    AITasksModule,
+    forwardRef(() => AITasksModule),
     ActivityModule,
   ],
   providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker],

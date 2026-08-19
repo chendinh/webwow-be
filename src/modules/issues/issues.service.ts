@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { QueueService } from '../../queue/queue.service';
 import { CreateIssueDto } from './dto/create-issue.dto';
 import { UpdateIssueDto } from './dto/update-issue.dto';
+import { TaskSummaryDto } from './dto/task-summary.dto';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -199,5 +200,56 @@ export class IssuesService {
       where: { id: issueId },
       data: { deletedAt: new Date() },
     });
+  }
+
+  // ── Summary ────────────────────────────────────────────────────────────────
+
+  /**
+   * Returns a task summary for a completed issue.
+   * Aggregates CostEstimate, AITask results, and PR link into a single DTO.
+   * NEVER exposes internalAiCost, actualCostUsd, or internalTokens.
+   */
+  async getSummary(issueId: string, organizationId: string): Promise<TaskSummaryDto> {
+    const issue = await this.prisma.issue.findFirst({
+      where: { id: issueId, organizationId, deletedAt: null },
+      include: {
+        costEstimate: true,
+        aiTasks: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: { pullRequests: { take: 1 } },
+        },
+      },
+    });
+
+    if (!issue) throw new NotFoundException('Issue not found');
+
+    const task = issue.aiTasks[0] ?? null;
+    const pr = task?.pullRequests?.[0] ?? null;
+    const ce = issue.costEstimate;
+
+    return {
+      issueId: issue.id,
+      title: issue.title,
+      status: issue.status,
+      complexity: issue.complexity ?? null,
+      riskLevel: issue.riskLevel ?? null,
+      webwowAiTeam: {
+        completionMinutes: ce?.aiCompletionMinutes ?? null,
+        customerPrice: ce?.customerPriceBase ?? null,
+        customerPriceMin: ce?.customerPriceMin ?? null,
+        customerPriceMax: ce?.customerPriceMax ?? null,
+        baselineCostIncluded: ce?.baselineCostIncluded ?? null,
+      },
+      devComparison: ce?.devComparison as TaskSummaryDto['devComparison'] ?? null,
+      filesChanged: task?.filesChanged ?? [],
+      testPassed: (task?.testResult as { passed?: boolean } | null)?.passed ?? null,
+      pullRequestUrl: pr?.githubPrUrl ?? null,
+      tokenEfficiency: ce ? {
+        estimatedTokens: ce.internalTokens,
+        actualTokens: ce.actualTokens ?? null,
+        variancePct: ce.tokenVariancePct ?? null,
+      } : null,
+    };
   }
 }

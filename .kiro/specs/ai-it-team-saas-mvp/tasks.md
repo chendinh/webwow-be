@@ -523,7 +523,7 @@ Triển khai toàn bộ MVP từ hai workspace rỗng: backend NestJS (TypeScrip
 
 ### Sprint 5: Frontend — Next.js 14 App Router, tất cả trang và components
 
-- [ ] 19. Khởi tạo dự án Frontend Next.js 14
+- [x] 19. Khởi tạo dự án Frontend Next.js 14
   - [x] 19.1 Tạo cấu trúc Next.js 14 App Router và cài đặt dependencies
     - Khởi tạo Next.js 14 project với TypeScript strict mode
     - Cài đặt: `shadcn/ui`, `tailwindcss`, `@tanstack/react-query`, `zustand`, `axios`, `react-hook-form`, `zod`
@@ -541,7 +541,7 @@ Triển khai toàn bộ MVP từ hai workspace rỗng: backend NestJS (TypeScrip
     - Viết utils: `src/lib/utils/format-currency.ts`, `format-date.ts`, `cn.ts`
     - _Requirements: R23.1, R25.1_
 
-  - [ ] 19.3 Tạo Layout components
+  - [x] 19.3 Tạo Layout components
     - Viết `src/components/layout/sidebar.tsx`: điều hướng tới Dashboard, Projects, Usage & Billing, Settings
     - Viết `src/components/layout/topbar.tsx`: active org selector, user menu
     - Viết `src/components/layout/breadcrumb.tsx`

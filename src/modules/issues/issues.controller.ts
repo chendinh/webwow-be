@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -25,6 +26,7 @@ import { Issue } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { IssuesService } from './issues.service';
 import { CreateIssueDto, UpdateIssueDto } from './dto';
+import { TaskSummaryDto } from './dto/task-summary.dto';
 
 @ApiTags('Issues')
 @ApiBearerAuth()
@@ -45,7 +47,6 @@ export class IssuesController {
   })
   @ApiParam({ name: 'projectId', description: 'ID của dự án' })
   @ApiQuery({ name: 'organizationId', required: true, description: 'ID của tổ chức' })
-  @ApiQuery({ name: 'userId', required: false, description: 'ID của người dùng tạo issue' })
   @ApiResponse({ status: 201, description: 'Tạo issue thành công, đang phân tích AI.' })
   @ApiResponse({ status: 400, description: 'Dữ liệu không hợp lệ hoặc dự án không được hỗ trợ.' })
   @ApiResponse({ status: 401, description: 'Chưa xác thực.' })
@@ -54,10 +55,10 @@ export class IssuesController {
   async create(
     @Param('projectId') projectId: string,
     @Query('organizationId') organizationId: string,
-    @Query('userId') userId: string,
+    @Request() req: { user: { sub: string } },
     @Body() dto: CreateIssueDto,
   ): Promise<Issue> {
-    return this.issuesService.create(organizationId, projectId, userId, dto);
+    return this.issuesService.create(organizationId, projectId, req.user.sub, dto);
   }
 
   // ── GET /api/projects/:projectId/issues ───────────────────────────────────
@@ -118,6 +119,23 @@ export class IssuesController {
     @Body() dto: UpdateIssueDto,
   ): Promise<Issue> {
     return this.issuesService.update(issueId, organizationId, dto);
+  }
+
+  // ── GET /api/projects/:projectId/issues/:issueId/summary ─────────────────
+
+  @Get(':issueId/summary')
+  @ApiOperation({ summary: 'Lấy tổng kết task — so sánh WebWow AI Team với dev thủ công' })
+  @ApiParam({ name: 'projectId', description: 'ID dự án' })
+  @ApiParam({ name: 'issueId', description: 'ID issue' })
+  @ApiQuery({ name: 'organizationId', required: true })
+  @ApiResponse({ status: 200, description: 'Task summary với so sánh WebWow AI Team vs developer.' })
+  @ApiResponse({ status: 401, description: 'Chưa xác thực.' })
+  @ApiResponse({ status: 404, description: 'Issue không tồn tại.' })
+  async getSummary(
+    @Param('issueId') issueId: string,
+    @Query('organizationId') organizationId: string,
+  ): Promise<TaskSummaryDto> {
+    return this.issuesService.getSummary(issueId, organizationId);
   }
 
   // ── DELETE /api/projects/:projectId/issues/:issueId ───────────────────────

@@ -330,6 +330,22 @@ export class ProjectAnalysisWorker extends WorkerHost {
         update: { ...analysisData },
       });
 
+      // ── Step 8b: Calculate and save baseline tokens/cost ──────────────────
+      // Estimate tokens from fetched file content (no AI was called, but we
+      // represent the "cost" of reading the codebase at GPT-4o rates)
+      const fetchedContents = [packageJsonRaw, tsconfigRaw, readmeRaw, dockerfileRaw, ciWorkflowRaw];
+      const totalChars = fetchedContents.reduce(
+        (sum, content) => sum + (content ? content.length : 0),
+        0,
+      );
+      const baselineTokens = Math.ceil(totalChars / 4);
+      const baselineCostUsd = (baselineTokens / 1_000_000) * 15; // GPT-4o rate
+
+      await this.prisma.projectAnalysis.update({
+        where: { projectId },
+        data: { baselineTokens, baselineCostUsd },
+      });
+
       // ── Step 9: Update Project status → ACTIVE ────────────────────────────
       await this.prisma.project.update({
         where: { id: projectId },
@@ -342,7 +358,9 @@ export class ProjectAnalysisWorker extends WorkerHost {
           organizationId,
           projectId,
           eventType: 'STATE_CHANGE',
-          friendlyMessage: `Phân tích dự án hoàn tất. Điểm tương thích: ${score}/100 (${tier}).`,
+          friendlyMessage: `Phân tích dự án hoàn tất. Điểm tương thích: ${score}/100 (${tier}). Token cơ sở: ${baselineTokens}, chi phí: $${baselineCostUsd.toFixed(4)}.`,
+          tokensUsed: baselineTokens,
+          estimatedCost: baselineCostUsd,
           actorId: 'system',
         },
       });

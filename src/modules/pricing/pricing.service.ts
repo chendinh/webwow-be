@@ -15,7 +15,11 @@ export interface CostEstimateData {
   customerPriceMin: number;     // base × 0.8
   customerPriceBase: number;    // what customer pays
   customerPriceMax: number;     // base × 1.2
-  developerComparison: number;  // equivalent manual cost
+  devComparison: {
+    junior:  { hours: number; costUsd: number };
+    middle:  { hours: number; costUsd: number };
+    senior:  { hours: number; costUsd: number };
+  };
   expiresAt: Date;              // now + 24 hours
 }
 
@@ -44,16 +48,20 @@ const PRICE_MARGIN = 2.5;
 // Minimum charge to avoid $0 prices
 const MINIMUM_CUSTOMER_PRICE = 0.50;
 
-// Developer hours per complexity level
-const DEV_HOURS: Record<PricingInput['complexity'], number> = {
-  LOW: 2,
-  MEDIUM: 6,
-  HIGH: 16,
-  CRITICAL: 40,
+// Vietnam international market rates 2026 (source: secondtalent.com)
+const DEV_RATES = {
+  junior: 20,  // $20/hr
+  middle: 35,  // $35/hr
+  senior: 55,  // $55/hr
 };
 
-// Developer hourly rate
-const DEV_HOURLY_RATE = 75;
+// Estimated hours per complexity level per seniority
+const DEV_HOURS_BY_LEVEL: Record<PricingInput['complexity'], { junior: number; middle: number; senior: number }> = {
+  LOW:      { junior: 2,  middle: 1.5, senior: 0.5 },
+  MEDIUM:   { junior: 8,  middle: 4,   senior: 2   },
+  HIGH:     { junior: 24, middle: 16,  senior: 8   },
+  CRITICAL: { junior: 60, middle: 40,  senior: 20  },
+};
 
 @Injectable()
 export class PricingService {
@@ -83,8 +91,13 @@ export class PricingService {
     const customerPriceMin = customerPriceBase * 0.8;  // -20%
     const customerPriceMax = customerPriceBase * 1.2;  // +20%
 
-    // Developer comparison: hours × $75/hour
-    const developerComparison = DEV_HOURS[complexity] * DEV_HOURLY_RATE;
+    // Developer comparison table: junior / middle / senior
+    const hours = DEV_HOURS_BY_LEVEL[complexity];
+    const devComparison = {
+      junior: { hours: hours.junior, costUsd: this.round2(hours.junior * DEV_RATES.junior) },
+      middle: { hours: hours.middle, costUsd: this.round2(hours.middle * DEV_RATES.middle) },
+      senior: { hours: hours.senior, costUsd: this.round2(hours.senior * DEV_RATES.senior) },
+    };
 
     // Expiry: 24 hours from now
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -95,7 +108,7 @@ export class PricingService {
       customerPriceMin: this.round2(customerPriceMin),
       customerPriceBase: this.round2(customerPriceBase),
       customerPriceMax: this.round2(customerPriceMax),
-      developerComparison: this.round2(developerComparison),
+      devComparison,
       expiresAt,
     };
   }

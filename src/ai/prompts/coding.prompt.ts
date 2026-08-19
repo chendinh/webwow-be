@@ -5,8 +5,9 @@ export class CodingPrompt {
 Your job is to implement a specific file change from an approved implementation plan.
 
 CRITICAL RULES:
-- Return ONLY the complete new file content as a JSON string
-- Do NOT return markdown, explanations, or code blocks — only the raw file content
+- Return ONLY the complete new file content as plain text
+- Do NOT wrap in markdown code blocks, JSON, or any other format
+- Do NOT include any explanation or commentary — only the raw file content
 - Follow the existing code style and patterns in the provided context
 - Implement ONLY what is described in the step, nothing more
 - Ensure the code compiles and follows TypeScript strict mode if applicable
@@ -32,7 +33,6 @@ Language: ${context.language}
 
 ${existingContent ? `EXISTING FILE CONTENT:\n${existingContent}` : 'This is a new file to create.'}
 
-Return the complete new file content as a plain JSON string (not wrapped in markdown).
-For DELETE operations, return an empty string "".`;
+Return ONLY the complete new file content as plain text. No markdown, no code blocks, no explanation.`;
   }
 }

@@ -4,6 +4,7 @@ import { AITask, AITaskStatus, ActivityLog } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ActivityService } from '../activity/activity.service';
 import { StateMachineService } from './state-machine.service';
+import { QueueService } from '../../queue/queue.service';
 
 const MSG = {
   TASK_NOT_FOUND: 'Tác vụ AI không tồn tại hoặc bạn không có quyền truy cập.',
@@ -15,6 +16,7 @@ export class AITasksService {
     private readonly prisma: PrismaService,
     private readonly stateMachine: StateMachineService,
     private readonly activityService: ActivityService,
+    private readonly queueService: QueueService,
   ) {}
 
   /**
@@ -149,6 +151,51 @@ export class AITasksService {
       oldStatus: task.status,
       newStatus: toStatus,
       actorId: 'system',
+    });
+
+    return updated;
+  }
+
+  /**
+   * Resume a task from WAITING_APPROVAL back to QUEUED.
+   * Marks preflightApproved=true so the worker skips the major-error gate.
+   * Re-enqueues the AI_CODING job.
+   * Requirements: pre-flight approval flow
+   */
+  async resume(taskId: string, organizationId: string): Promise<AITask> {
+    const task = await this.findById(taskId, organizationId);
+
+    // WAITING_APPROVAL → QUEUED
+    this.stateMachine.assertValidTransition(task.status, AITaskStatus.QUEUED);
+
+    const updated = await this.prisma.aITask.update({
+      where: { id: taskId },
+      data: {
+        status: AITaskStatus.QUEUED,
+        failureReason: null,
+        preflightApproved: true,
+        currentStep: 'Chờ xử lý lại (người dùng đã xác nhận)',
+      },
+    });
+
+    await this.activityService.log({
+      organizationId,
+      projectId: task.projectId,
+      issueId: task.issueId,
+      taskId,
+      eventType: 'STATE_CHANGE',
+      friendlyMessage: 'Người dùng đã xác nhận tiếp tục. Task được đưa lại vào hàng đợi.',
+      oldStatus: task.status,
+      newStatus: AITaskStatus.QUEUED,
+      actorId: 'user',
+    });
+
+    // Re-enqueue the AI_CODING job
+    await this.queueService.enqueueAICoding({
+      taskId,
+      issueId: task.issueId,
+      projectId: task.projectId,
+      organizationId,
     });
 
     return updated;

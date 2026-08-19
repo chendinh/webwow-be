@@ -10,6 +10,9 @@ import { PricingService } from '../../modules/pricing/pricing.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AIAnalysisJobData } from '../queue.types';
 
+// Default divisor for spreading baseline cost across issues (MVP)
+const BASELINE_COST_ISSUE_DIVISOR = 10;
+
 @Processor(QUEUES.AI_ANALYSIS, { concurrency: CONCURRENCY.AI_ANALYSIS })
 export class AIAnalysisWorker extends WorkerHost {
   private readonly logger = new Logger(AIAnalysisWorker.name);
@@ -51,33 +54,65 @@ export class AIAnalysisWorker extends WorkerHost {
       };
 
       // ── Step 3: Run AnalysisAgent ─────────────────────────────────────
-      const analysisResult = await this.analysisAgent.analyze(
-        {
-          title: issue.title,
-          description: issue.description,
-          type: issue.type,
-          priority: issue.priority,
-        },
-        projectContext,
-      );
+      const { result: analysisResult, tokensUsed: analysisTokens, costUsd: analysisCost } =
+        await this.analysisAgent.analyze(
+          {
+            title: issue.title,
+            description: issue.description,
+            type: issue.type,
+            priority: issue.priority,
+          },
+          projectContext,
+        );
 
       this.logger.log(
         `Analysis complete for issue ${issueId}: complexity=${analysisResult.complexity}, risk=${analysisResult.riskLevel}`,
       );
 
-      // ── Step 4: Run PlanningAgent ──────────────────────────────────────
-      const implementationPlan = await this.planningAgent.plan(
-        {
-          title: issue.title,
-          description: issue.description,
-          type: issue.type,
+      // Log AnalysisAgent actual token usage
+      await this.prisma.activityLog.create({
+        data: {
+          organizationId,
+          issueId,
+          projectId: issue.projectId,
+          eventType: 'AI_CALL',
+          agentType: 'AnalysisAgent',
+          friendlyMessage: `AnalysisAgent hoàn tất. Token thực tế: ${analysisTokens}. Chi phí: $${analysisCost.toFixed(4)}.`,
+          tokensUsed: analysisTokens,
+          estimatedCost: analysisCost,
+          actorId: 'system',
         },
-        analysisResult,
-      );
+      });
+
+      // ── Step 4: Run PlanningAgent ──────────────────────────────────────
+      const { result: implementationPlan, tokensUsed: planningTokens, costUsd: planningCost } =
+        await this.planningAgent.plan(
+          {
+            title: issue.title,
+            description: issue.description,
+            type: issue.type,
+          },
+          analysisResult,
+        );
 
       this.logger.log(
         `Planning complete for issue ${issueId}: ${implementationPlan.steps.length} steps`,
       );
+
+      // Log PlanningAgent actual token usage
+      await this.prisma.activityLog.create({
+        data: {
+          organizationId,
+          issueId,
+          projectId: issue.projectId,
+          eventType: 'AI_CALL',
+          agentType: 'PlanningAgent',
+          friendlyMessage: `PlanningAgent hoàn tất. Token thực tế: ${planningTokens}. Chi phí: $${planningCost.toFixed(4)}.`,
+          tokensUsed: planningTokens,
+          estimatedCost: planningCost,
+          actorId: 'system',
+        },
+      });
 
       // ── Step 5: Calculate pricing ──────────────────────────────────────
       const costEstimateData = this.pricingService.calculate({
@@ -87,6 +122,9 @@ export class AIAnalysisWorker extends WorkerHost {
         risk: analysisResult.riskLevel,
         projectSizeKb: 0, // not available at this stage
       });
+
+      // Spread project baseline cost across estimated issues (MVP: divide by 10)
+      const baselineCostIncluded = (projectAnalysis?.baselineCostUsd ?? 0) / BASELINE_COST_ISSUE_DIVISOR;
 
       // ── Step 6: Persist results to DB (transaction) ────────────────────
       await this.prisma.$transaction([
@@ -104,14 +142,17 @@ export class AIAnalysisWorker extends WorkerHost {
         }),
         this.prisma.costEstimate.upsert({
           where: { issueId },
-          create: { issueId, organizationId, ...costEstimateData },
-          update: { ...costEstimateData },
+          create: { issueId, organizationId, baselineCostIncluded, ...costEstimateData },
+          update: { baselineCostIncluded, ...costEstimateData },
         }),
       ]);
 
       this.logger.log(`Persisted analysis results for issue ${issueId}`);
 
-      // ── Step 7: Log to ActivityLog ─────────────────────────────────────
+      // ── Step 7: Log combined ActivityLog entry ─────────────────────────
+      const totalActualTokens = analysisTokens + planningTokens;
+      const totalActualCost = analysisCost + planningCost;
+
       await this.prisma.activityLog.create({
         data: {
           organizationId,
@@ -119,7 +160,9 @@ export class AIAnalysisWorker extends WorkerHost {
           projectId: issue.projectId,
           eventType: 'AI_CALL',
           agentType: 'AIAnalysisAgent',
-          friendlyMessage: `Phân tích hoàn tất. Độ phức tạp: ${analysisResult.complexity}. Ước tính chi phí: $${costEstimateData.customerPriceBase}.`,
+          friendlyMessage: `Phân tích AI hoàn tất. Token thực tế: ${totalActualTokens} (ước tính: ${implementationPlan.estimatedTokens}). Chi phí phân tích: $${totalActualCost.toFixed(4)}.`,
+          tokensUsed: totalActualTokens,
+          estimatedCost: totalActualCost,
           actorId: 'system',
         },
       });

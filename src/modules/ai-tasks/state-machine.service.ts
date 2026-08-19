@@ -2,10 +2,10 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { AITaskStatus } from '@prisma/client';
 
 export const VALID_TRANSITIONS: Record<AITaskStatus, AITaskStatus[]> = {
-  QUEUED:           ['ANALYZING', 'CANCELLED', 'FAILED'],
+  QUEUED:           ['ANALYZING', 'PREPARING', 'WAITING_APPROVAL', 'CANCELLED', 'FAILED'],
   ANALYZING:        ['PLANNING', 'FAILED', 'CANCELLED'],
   PLANNING:         ['WAITING_APPROVAL', 'FAILED'],
-  WAITING_APPROVAL: ['APPROVED', 'CANCELLED'],
+  WAITING_APPROVAL: ['APPROVED', 'PREPARING', 'QUEUED', 'CANCELLED'],
   APPROVED:         ['PREPARING', 'FAILED'],
   PREPARING:        ['CODING', 'FAILED'],
   CODING:           ['TESTING', 'FAILED'],

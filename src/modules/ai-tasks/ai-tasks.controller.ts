@@ -84,6 +84,27 @@ export class AITasksController {
     return this.aiTasksService.cancel(taskId, organizationId);
   }
 
+  // ── POST /api/ai-tasks/:taskId/resume?organizationId=xxx ──────────────────
+
+  @Post(':taskId/resume')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Tiếp tục tác vụ AI sau khi xác nhận lỗi',
+    description: 'Cho phép tiếp tục tác vụ AI đang ở trạng thái WAITING_APPROVAL. Đặt preflightApproved=true và đưa lại vào hàng đợi.',
+  })
+  @ApiParam({ name: 'taskId', description: 'ID của tác vụ AI' })
+  @ApiQuery({ name: 'organizationId', required: true, description: 'ID của tổ chức' })
+  @ApiResponse({ status: 200, description: 'Tác vụ đã được đưa lại vào hàng đợi.' })
+  @ApiResponse({ status: 400, description: 'Tác vụ không ở trạng thái WAITING_APPROVAL.' })
+  @ApiResponse({ status: 401, description: 'Chưa xác thực.' })
+  @ApiResponse({ status: 404, description: 'Tác vụ không tồn tại hoặc bạn không có quyền truy cập.' })
+  async resume(
+    @Param('taskId') taskId: string,
+    @Query('organizationId') organizationId: string,
+  ): Promise<AITask> {
+    return this.aiTasksService.resume(taskId, organizationId);
+  }
+
   // ── GET /api/ai-tasks/:taskId/logs?organizationId=xxx ────────────────────
 
   @Get(':taskId/logs')

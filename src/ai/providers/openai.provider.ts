@@ -45,7 +45,21 @@ export class OpenAiProvider implements IAIProvider {
         });
 
         const rawContent = completion.choices[0]?.message?.content ?? '{}';
-        const content = JSON.parse(rawContent) as T;
+
+        // Strip markdown code blocks if present (e.g., ```json ... ``` or ``` ... ```)
+        const stripped = rawContent
+          .replace(/^```(?:json|typescript|tsx?|jsx?|css|html|ya?ml|sh|bash)?\s*/i, '')
+          .replace(/\s*```\s*$/, '')
+          .trim();
+
+        // Try JSON parse; if it fails, return raw string as content
+        let content: T;
+        try {
+          content = JSON.parse(stripped) as T;
+        } catch {
+          // Not JSON — return as raw string (used by CodingAgent for file content)
+          content = stripped as unknown as T;
+        }
 
         const inputTokens = completion.usage?.prompt_tokens ?? 0;
         const outputTokens = completion.usage?.completion_tokens ?? 0;

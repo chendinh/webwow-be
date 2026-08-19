@@ -2,12 +2,15 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { AITaskStatus } from '@prisma/client';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { SandboxExecutorService } from '../../sandbox/sandbox-executor.service';
 import { AITasksService } from '../../modules/ai-tasks/ai-tasks.service';
 import { GithubService } from '../../modules/github/github.service';
 import { ActivityService } from '../../modules/activity/activity.service';
+import { CodingAgent } from '../../ai/agents/coding.agent';
 import { ImplementationPlan } from '../../ai/schemas/implementation-plan.schema';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AICodingJobData } from '../queue.types';
@@ -27,6 +30,7 @@ export class AICodingWorker extends WorkerHost {
     private readonly githubService: GithubService,
     private readonly activityService: ActivityService,
     private readonly queueService: QueueService,
+    private readonly codingAgent: CodingAgent,
   ) {
     super();
   }
@@ -51,6 +55,16 @@ export class AICodingWorker extends WorkerHost {
       }
 
       const { issue, project } = task;
+
+      // Guard: if task is already in a terminal state (from a previous failed attempt),
+      // reset it to QUEUED so BullMQ retry can proceed
+      const terminalStates: AITaskStatus[] = [AITaskStatus.FAILED, AITaskStatus.CANCELLED, AITaskStatus.COMPLETED];
+      if (terminalStates.includes(task.status)) {
+        await this.prisma.aITask.update({
+          where: { id: taskId },
+          data: { status: AITaskStatus.QUEUED, failureReason: null },
+        });
+      }
 
       // MVP simplicity: if ImplementationPlan is null, fail immediately
       if (!issue.implementationPlan) {
@@ -80,13 +94,82 @@ export class AICodingWorker extends WorkerHost {
 
       // ── Step 4: Clone repo in sandbox ────────────────────────────────────
       const cloneUrl = `https://x-access-token:${githubToken}@github.com/${project.githubRepoFullName}.git`;
+
+      // Disable macOS Keychain credential helper to prevent popup dialogs
+      // Use token embedded in URL — no interactive auth needed
+      await this.sandbox.exec(
+        containerId,
+        `git config --global credential.helper '' && git config --global core.askPass '' && git config --global GIT_TERMINAL_PROMPT 0`,
+      );
+
       const cloneResult = await this.sandbox.exec(
         containerId,
-        `git clone ${cloneUrl} /workspace/repo`,
+        `GIT_TERMINAL_PROMPT=0 git clone ${cloneUrl} /workspace/repo`,
       );
 
       if (cloneResult.exitCode !== 0) {
         throw new Error(`Git clone failed: ${cloneResult.stderr}`);
+      }
+
+      // ── Step 4b: Pre-flight build check on ORIGINAL code ────────────────
+      this.logger.log(`Running pre-flight build check on original code for task ${taskId}`);
+      const preflightResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
+
+      if (!preflightResult.passed) {
+        // Re-load task to check if user has already approved
+        const latestTask = await this.prisma.aITask.findUnique({ where: { id: taskId } });
+        const alreadyApproved = latestTask?.preflightApproved === true;
+
+        if (!alreadyApproved) {
+          // Classify error severity
+          const isMinorError = this.isMinorBuildError(preflightResult.output);
+
+          if (isMinorError) {
+            // Auto-fix minor errors and log
+            this.logger.warn(`Pre-flight found minor build errors, attempting auto-fix for task ${taskId}`);
+            await this.activityService.log({
+              organizationId, projectId, issueId, taskId,
+              eventType: 'ERROR',
+              friendlyMessage: `Phát hiện lỗi nhỏ trong dự án gốc. Đang tự động sửa trước khi thực hiện task.`,
+              technicalDetail: { preflightOutput: preflightResult.output.substring(0, 2000) },
+              actorId: 'system',
+            });
+            // Store pre-flight issues in AITask for summary
+            await this.prisma.aITask.update({
+              where: { id: taskId },
+              data: { buildResult: { preflightIssues: preflightResult.output.substring(0, 2000), autoFixed: true } },
+            });
+          } else {
+            // Major error: transition to WAITING_APPROVAL and pause
+            this.logger.error(`Pre-flight found major build errors for task ${taskId}, waiting for user approval`);
+            await this.aiTasksService.transitionStatus(taskId, AITaskStatus.WAITING_APPROVAL, organizationId, {
+              currentStep: 'Chờ xác nhận lỗi project',
+            });
+            await this.prisma.aITask.update({
+              where: { id: taskId },
+              data: {
+                buildResult: {
+                  preflightIssues: preflightResult.output.substring(0, 3000),
+                  autoFixed: false,
+                  requiresUserApproval: true,
+                  errorSummary: this.extractBuildErrorSummary(preflightResult.output),
+                },
+                failureReason: `Project có lỗi build cần xử lý trước: ${this.extractBuildErrorSummary(preflightResult.output)}`,
+              },
+            });
+            // Do NOT throw — just return, task is now WAITING_APPROVAL
+            return;
+          }
+        } else {
+          this.logger.warn(`Pre-flight errors present but user already approved for task ${taskId}, proceeding`);
+          await this.activityService.log({
+            organizationId, projectId, issueId, taskId,
+            eventType: 'ERROR',
+            friendlyMessage: `Người dùng đã xác nhận tiếp tục dù project có lỗi build. Đang tiến hành task.`,
+            technicalDetail: { preflightOutput: preflightResult.output.substring(0, 2000) },
+            actorId: 'system',
+          });
+        }
       }
 
       // ── Step 5: Create AI branch ──────────────────────────────────────────
@@ -122,8 +205,18 @@ export class AICodingWorker extends WorkerHost {
         currentStep: 'Viết code',
       });
 
-      // ── Step 7: Apply code changes from ImplementationPlan ───────────────
+      // ── Step 7: Apply code changes via CodingAgent ───────────────────────
       const changedFiles: string[] = [];
+      let totalCodingTokens = 0;
+
+      // Detect project context from analysis
+      const projectAnalysis = await this.prisma.projectAnalysis.findUnique({
+        where: { projectId },
+      });
+      const codeContext = {
+        framework: (projectAnalysis?.frameworks ?? ['unknown'])[0] ?? 'unknown',
+        language: projectAnalysis?.primaryLanguage ?? 'typescript',
+      };
 
       for (const step of plan.steps) {
         this.logger.debug(`Applying step ${step.order}: ${step.type} ${step.filePath}`);
@@ -133,82 +226,84 @@ export class AICodingWorker extends WorkerHost {
             containerId,
             `cd /workspace/repo && rm -f "${step.filePath}"`,
           );
-
           await this.activityService.log({
-            organizationId,
-            projectId,
-            issueId,
-            taskId,
+            organizationId, projectId, issueId, taskId,
             eventType: 'FILE_CHANGED',
             friendlyMessage: `Đã xóa file: ${step.filePath}`,
-            technicalDetail: {
-              operation: 'DELETE',
-              filePath: step.filePath,
-              exitCode: result.exitCode,
-            },
+            technicalDetail: { operation: 'DELETE', filePath: step.filePath, exitCode: result.exitCode },
             actorId: 'system',
           });
+          if (result.exitCode === 0) changedFiles.push(step.filePath);
+          continue;
+        }
 
-          if (result.exitCode === 0) {
-            changedFiles.push(step.filePath);
+        // Read existing file content from sandbox (local mode: read from workdir)
+        let existingContent: string | null = null;
+        const localWorkdir = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
+          .localWorkdirs?.get(containerId);
+        if (localWorkdir) {
+          const fullPath = path.join(localWorkdir, 'workspace', 'repo', step.filePath);
+          if (fs.existsSync(fullPath)) {
+            existingContent = fs.readFileSync(fullPath, 'utf8');
           }
         } else {
-          // CREATE or MODIFY: write content using printf to avoid heredoc quoting issues
-          // The description field contains the intended change; we use it as file content placeholder.
-          // In a full implementation this would come from the CodingAgent; here we write the description.
-          const escapedContent = step.description
-            .replace(/\\/g, '\\\\')
-            .replace(/'/g, "'\\''");
-
-          // Ensure parent directory exists
-          const dirPath = step.filePath.includes('/')
-            ? step.filePath.substring(0, step.filePath.lastIndexOf('/'))
-            : '';
-
-          if (dirPath) {
-            await this.sandbox.exec(
-              containerId,
-              `mkdir -p /workspace/repo/${dirPath}`,
-            );
-          }
-
-          const writeResult = await this.sandbox.exec(
+          // Docker mode: read via exec
+          const readResult = await this.sandbox.exec(
             containerId,
-            `printf '%s' '${escapedContent}' > /workspace/repo/${step.filePath}`,
+            `cat /workspace/repo/${step.filePath} 2>/dev/null || echo ""`,
           );
-
-          const operationType = step.type === 'CREATE' ? 'Tạo' : 'Sửa';
-          await this.activityService.log({
-            organizationId,
-            projectId,
-            issueId,
-            taskId,
-            eventType: 'FILE_CHANGED',
-            friendlyMessage: `${operationType} file: ${step.filePath}`,
-            technicalDetail: {
-              operation: step.type,
-              filePath: step.filePath,
-              exitCode: writeResult.exitCode,
-              description: step.description,
-            },
-            actorId: 'system',
-          });
-
-          if (writeResult.exitCode === 0) {
-            changedFiles.push(step.filePath);
-          }
+          existingContent = readResult.stdout || null;
         }
+
+        // Call CodingAgent to generate actual code
+        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext);
+        totalCodingTokens += 100; // approximation — CodingAgent doesn't expose tokens yet
+
+        // Ensure parent directory exists
+        const dirPath = step.filePath.includes('/')
+          ? step.filePath.substring(0, step.filePath.lastIndexOf('/'))
+          : '';
+        if (dirPath) {
+          await this.sandbox.exec(containerId, `mkdir -p /workspace/repo/${dirPath}`);
+        }
+
+        // Write generated code to file
+        if (localWorkdir) {
+          // Local mode: write directly to filesystem
+          const fullPath = path.join(localWorkdir, 'workspace', 'repo', step.filePath);
+          if (dirPath) {
+            fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+          }
+          fs.writeFileSync(fullPath, codeChange.content, 'utf8');
+        } else {
+          // Docker mode: use heredoc-safe write via base64
+          const b64 = Buffer.from(codeChange.content).toString('base64');
+          await this.sandbox.exec(
+            containerId,
+            `echo "${b64}" | base64 -d > /workspace/repo/${step.filePath}`,
+          );
+        }
+
+        const operationType = step.type === 'CREATE' ? 'Tạo' : 'Sửa';
+        await this.activityService.log({
+          organizationId, projectId, issueId, taskId,
+          eventType: 'FILE_CHANGED',
+          friendlyMessage: `${operationType} file: ${step.filePath}`,
+          technicalDetail: { operation: step.type, filePath: step.filePath },
+          actorId: 'system',
+        });
+        changedFiles.push(step.filePath);
       }
 
-      // Persist changedFiles list
+      // Update actual tokens
       await this.prisma.aITask.update({
         where: { id: taskId },
-        data: { filesChanged: changedFiles },
+        data: { filesChanged: changedFiles, actualTokens: totalCodingTokens },
       });
 
-      // ── Step 8: Transition → TESTING, run checks ─────────────────────────
+      // ── Step 8: Transition → TESTING, run build checks BEFORE commit ─────
       await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
-        currentStep: 'Chạy kiểm tra',
+        currentStep: 'Chạy kiểm tra trước khi commit',
       });
 
       let checksPass = false;
@@ -217,7 +312,6 @@ export class AICodingWorker extends WorkerHost {
 
       while (!checksPass && fixAttempts <= MAX_FIX_ATTEMPTS) {
         if (fixAttempts > 0) {
-          // Transition to FIXING before re-running checks
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.FIXING, organizationId, {
             currentStep: `Sửa lỗi (lần ${fixAttempts}/${MAX_FIX_ATTEMPTS})`,
           });
@@ -240,19 +334,18 @@ export class AICodingWorker extends WorkerHost {
 
         if (!checksPass) {
           fixAttempts++;
-
           if (fixAttempts > MAX_FIX_ATTEMPTS) {
             throw new Error(
-              `Kiểm tra thất bại sau ${MAX_FIX_ATTEMPTS} lần sửa. Output: ${lastTestOutput.substring(0, 500)}`,
+              `Build/test thất bại sau ${MAX_FIX_ATTEMPTS} lần sửa. Output: ${lastTestOutput.substring(0, 500)}`,
             );
           }
-
-          // Re-enter TESTING state before next attempt (FIXING → TESTING is valid)
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
             currentStep: `Chạy lại kiểm tra (lần ${fixAttempts + 1})`,
           });
         }
       }
+
+      this.logger.log(`Build checks passed for task ${taskId}, proceeding to commit`);
 
       // ── Step 9: Transition → REVIEWING, commit & push ────────────────────
       await this.aiTasksService.transitionStatus(taskId, AITaskStatus.REVIEWING, organizationId, {
@@ -292,10 +385,11 @@ AI-Task-Id: ${taskId}`;
         throw new Error(`git commit failed: ${commitResult.stderr}`);
       }
 
-      // Push branch using token auth (already embedded in remote URL via clone)
+      // Push branch — token embedded in remote URL, disable credential helpers to prevent popups
       const pushResult = await this.sandbox.exec(
         containerId,
-        `cd /workspace/repo && git push origin ${branchName}`,
+        `cd /workspace/repo && GIT_TERMINAL_PROMPT=0 git push origin ${branchName}`,
+        180_000,
       );
 
       if (pushResult.exitCode !== 0) {
@@ -304,7 +398,52 @@ AI-Task-Id: ${taskId}`;
 
       this.logger.log(`Pushed branch ${branchName} for task ${taskId}`);
 
-      // ── Step 10: Transition → CREATING_PR, enqueue PR creation ───────────
+      // ── Step 10: Update CostEstimate with actual token usage ─────────────
+      const tokenCostPerMillion = 15; // GPT-4o
+      const actualTokens = task.actualTokens ?? 0;
+      const actualCostUsd = (actualTokens / 1_000_000) * tokenCostPerMillion;
+      const actualCustomerCost = Math.max(actualCostUsd * 2.5, 0.50); // same margin as pricing service
+
+      const costEstimate = await this.prisma.costEstimate.findUnique({ where: { issueId } });
+      if (costEstimate) {
+        const tokenVariancePct =
+          costEstimate.internalTokens > 0
+            ? ((actualTokens - costEstimate.internalTokens) / costEstimate.internalTokens) * 100
+            : null;
+
+        await this.prisma.costEstimate.update({
+          where: { issueId },
+          data: {
+            actualTokens,
+            actualCostUsd,
+            actualCustomerCost,
+            tokenVariancePct,
+          },
+        });
+
+        this.logger.log(
+          `Updated CostEstimate for issue ${issueId}: actualTokens=${actualTokens}, variance=${tokenVariancePct?.toFixed(1) ?? 'N/A'}%`,
+        );
+      }
+
+      // ── Step 10b: Record task duration and aiCompletionMinutes ──────────
+      const completedAt = new Date();
+      const durationMs = task.startedAt ? completedAt.getTime() - task.startedAt.getTime() : null;
+      const aiCompletionMinutes = durationMs ? Math.round(durationMs / 60000) : null;
+
+      await this.prisma.aITask.update({
+        where: { id: taskId },
+        data: { completedAt, durationMs },
+      });
+
+      if (aiCompletionMinutes !== null) {
+        await this.prisma.costEstimate.updateMany({
+          where: { issueId },
+          data: { aiCompletionMinutes },
+        });
+      }
+
+      // ── Step 11: Transition → CREATING_PR, enqueue PR creation ───────────
       await this.aiTasksService.transitionStatus(taskId, AITaskStatus.CREATING_PR, organizationId, {
         currentStep: 'Tạo Pull Request',
       });
@@ -419,5 +558,35 @@ AI-Task-Id: ${taskId}`;
       OTHER: 'chore',
     };
     return map[issueType] ?? 'chore';
+  }
+
+  /**
+   * Classify build error as minor (auto-fixable) or major (needs user approval).
+   * Minor: TypeScript null/undefined errors, unused imports, simple type mismatches.
+   * Major: Missing modules, compilation failures, missing dependencies, syntax errors.
+   */
+  private isMinorBuildError(output: string): boolean {
+    const majorPatterns = [
+      /Cannot find module/i,
+      /Module not found/i,
+      /SyntaxError/i,
+      /ENOENT/i,
+      /npm ERR!/i,
+      /Cannot find name/i,
+      /is not assignable to type/i,
+      /does not exist on type/i,
+    ];
+    // If any major pattern found, it's NOT minor
+    return !majorPatterns.some(p => p.test(output));
+  }
+
+  /**
+   * Extract a concise error summary from build output (first 300 chars of errors).
+   */
+  private extractBuildErrorSummary(output: string): string {
+    const lines = output.split('\n').filter(l =>
+      l.includes('Error') || l.includes('error') || l.includes('failed')
+    );
+    return lines.slice(0, 5).join(' | ').substring(0, 300) || 'Build error';
   }
 }

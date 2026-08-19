@@ -5,6 +5,12 @@ import { PlanningPrompt } from '../prompts/planning.prompt';
 import { ImplementationPlanSchema, ImplementationPlan } from '../schemas/implementation-plan.schema';
 import { AnalysisResult } from '../schemas/analysis-result.schema';
 
+export interface PlanningAgentResult {
+  result: ImplementationPlan;
+  tokensUsed: number;
+  costUsd: number;
+}
+
 @Injectable()
 export class PlanningAgent {
   private readonly logger = new Logger(PlanningAgent.name);
@@ -20,7 +26,7 @@ export class PlanningAgent {
       type: string;
     },
     analysisResult: AnalysisResult,
-  ): Promise<ImplementationPlan> {
+  ): Promise<PlanningAgentResult> {
     const systemPrompt = PlanningPrompt.buildSystem();
     const userPrompt = PlanningPrompt.buildUser(issue, analysisResult);
 
@@ -31,13 +37,16 @@ export class PlanningAgent {
       temperature: 0.1,
     });
 
+    const tokensUsed = response.inputTokens + response.outputTokens;
+    const costUsd = response.estimatedCostUsd;
+
     this.logger.log(
-      `Planning complete: ${response.inputTokens + response.outputTokens} tokens, $${response.estimatedCostUsd.toFixed(4)}`,
+      `Planning complete: ${tokensUsed} tokens, $${costUsd.toFixed(4)}`,
     );
 
     try {
       const result = ImplementationPlanSchema.parse(response.content);
-      return result;
+      return { result, tokensUsed, costUsd };
     } catch (err) {
       if (err instanceof ZodError) {
         this.logger.error(`Planning response validation failed: ${err.message}`);

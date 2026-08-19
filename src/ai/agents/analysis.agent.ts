@@ -4,6 +4,12 @@ import { AI_PROVIDER, IAIProvider } from '../providers/ai-provider.interface';
 import { IssueAnalysisPrompt } from '../prompts/issue-analysis.prompt';
 import { AnalysisResultSchema, AnalysisResult } from '../schemas/analysis-result.schema';
 
+export interface AnalysisAgentResult {
+  result: AnalysisResult;
+  tokensUsed: number;
+  costUsd: number;
+}
+
 @Injectable()
 export class AnalysisAgent {
   private readonly logger = new Logger(AnalysisAgent.name);
@@ -26,7 +32,7 @@ export class AnalysisAgent {
       mainDependencies: unknown[];
       buildScripts: unknown | null;
     },
-  ): Promise<AnalysisResult> {
+  ): Promise<AnalysisAgentResult> {
     const systemPrompt = IssueAnalysisPrompt.buildSystem();
     const userPrompt = IssueAnalysisPrompt.buildUser(issue, projectContext);
 
@@ -37,14 +43,17 @@ export class AnalysisAgent {
       temperature: 0.1,
     });
 
+    const tokensUsed = response.inputTokens + response.outputTokens;
+    const costUsd = response.estimatedCostUsd;
+
     this.logger.log(
-      `AI analysis complete: ${response.inputTokens + response.outputTokens} tokens, $${response.estimatedCostUsd.toFixed(4)}`,
+      `AI analysis complete: ${tokensUsed} tokens, $${costUsd.toFixed(4)}`,
     );
 
     // Validate response against Zod schema — throws ZodError if invalid
     try {
       const result = AnalysisResultSchema.parse(response.content);
-      return result;
+      return { result, tokensUsed, costUsd };
     } catch (err) {
       if (err instanceof ZodError) {
         this.logger.error(`AI analysis response validation failed: ${err.message}`);

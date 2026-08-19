@@ -1,6 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { AiModule } from './providers/ai.module';
-import { AI_PROVIDER } from './providers/ai-provider.interface';
 import { AnalysisAgent } from './agents/analysis.agent';
 import { PlanningAgent } from './agents/planning.agent';
 import { CodingAgent } from './agents/coding.agent';
@@ -13,7 +12,7 @@ export class AiCoreModule {
       module: AiCoreModule,
       imports: [AiModule.register()],
       providers: [AnalysisAgent, PlanningAgent, CodingAgent, ReviewAgent],
-      exports: [AI_PROVIDER, AnalysisAgent, PlanningAgent, CodingAgent, ReviewAgent],
+      exports: [AiModule, AnalysisAgent, PlanningAgent, CodingAgent, ReviewAgent],
     };
   }
 }

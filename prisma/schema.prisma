@@ -233,6 +233,10 @@ model ProjectAnalysis {
   buildScripts       Json?             // {test, build, lint, format}
   knownIssues        Json?
 
+  // Baseline cost tracking — NEVER expose to customer
+  baselineTokens     Int               @default(0)  // tokens used during project analysis
+  baselineCostUsd    Float             @default(0)  // internal USD cost of project analysis
+
   analyzedAt         DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -308,14 +312,24 @@ model CostEstimate {
   internalAiCost      Float    // USD
   internalTokens      Int
 
+  // Baseline cost spread across this estimate — NEVER expose to customer
+  baselineCostIncluded Float   @default(0)  // portion of project baseline cost included in this estimate
+
   // Customer-facing
   customerPriceMin    Float
   customerPriceBase   Float
   customerPriceMax    Float
-  developerComparison Float?   // equivalent cost if hiring developer
+  devComparison       Json     @default("{}")  // junior/middle/senior breakdown
+  aiCompletionMinutes Int?     // actual minutes WebWow AI Team took (startedAt → completedAt)
 
   expiresAt           DateTime
   isExpired           Boolean  @default(false)
+
+  // Actual usage (filled after AITask completes)
+  actualTokens          Int?               // actual tokens used during coding
+  actualCostUsd         Float?             // actual internal cost
+  actualCustomerCost    Float?             // actual customer charge
+  tokenVariancePct      Float?             // % difference: (actual - estimated) / estimated * 100
 
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -346,12 +360,16 @@ model AITask {
   buildResult    Json?        // {success, output}
   reviewSummary  String?
 
+  // Pre-flight approval
+  preflightApproved Boolean  @default(false)
+
   // Cost tracking
   actualTokens   Int          @default(0)
   actualCost     Float        @default(0)
 
   startedAt      DateTime?
   completedAt    DateTime?
+  durationMs     Int?       // calculated when task completes
   failedAt       DateTime?
   failureReason  String?      // Customer-friendly message
 
@@ -381,6 +399,9 @@ model AITaskStep {
   output      String?
   exitCode    Int?
   durationMs  Int?
+  tokensUsed  Int?      // tokens used in this specific step
+  costUsd     Float?    // USD cost of this step
+  agentType   String?   // which agent ran this step
   createdAt   DateTime  @default(now())
   completedAt DateTime?
 
