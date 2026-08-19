@@ -27,14 +27,19 @@ export class PlanningAgent {
     },
     analysisResult: AnalysisResult,
     language = 'en',
+    /** Actual file contents keyed by file path — fetched from GitHub after analysis */
+    fileContents: Record<string, string> = {},
   ): Promise<PlanningAgentResult> {
     const systemPrompt = PlanningPrompt.buildSystem(language);
-    const userPrompt = PlanningPrompt.buildUser(issue, analysisResult);
+    const userPrompt = PlanningPrompt.buildUser(issue, analysisResult, fileContents);
 
-    this.logger.log(`Creating implementation plan for: ${issue.title}`);
+    this.logger.log(
+      `Creating implementation plan for: ${issue.title} ` +
+      `(${Object.keys(fileContents).length} files with content)`,
+    );
 
     const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
-      maxTokens: 3000,
+      maxTokens: 4000,
       temperature: 0.1,
     });
 

@@ -9,6 +9,7 @@ import {
   NotificationJobData,
   PRCreationJobData,
   ProjectAnalysisJobData,
+  HealthCheckJobData,
 } from './queue.types';
 
 @Injectable()
@@ -24,6 +25,8 @@ export class QueueService {
     private readonly prCreationQueue: Queue,
     @InjectQueue(QUEUES.NOTIFICATION)
     private readonly notificationQueue: Queue,
+    @InjectQueue(QUEUES.HEALTH_CHECK)
+    private readonly healthCheckQueue: Queue,
   ) {}
 
   // Default job options: exponential backoff — 30s → 120s → 600s, max 3 attempts
@@ -80,6 +83,15 @@ export class QueueService {
       QUEUES.NOTIFICATION,
       data,
       this.defaultOptions,
+    );
+    return job.id as string;
+  }
+
+  async enqueueHealthCheck(data: HealthCheckJobData): Promise<string> {
+    const job = await this.healthCheckQueue.add(
+      QUEUES.HEALTH_CHECK,
+      data,
+      { ...this.defaultOptions, attempts: 1 }, // health check: single attempt, no retry
     );
     return job.id as string;
   }

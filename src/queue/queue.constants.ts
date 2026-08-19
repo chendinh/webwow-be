@@ -4,6 +4,7 @@ export const QUEUES = {
   AI_CODING: 'ai-coding',
   PR_CREATION: 'pr-creation',
   NOTIFICATION: 'notification',
+  HEALTH_CHECK: 'health-check',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -11,7 +12,8 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export const CONCURRENCY = {
   PROJECT_ANALYSIS: 3,
   AI_ANALYSIS: 5,
-  AI_CODING: 5, // Max 5 concurrent coding tasks (R19.4)
+  AI_CODING: 5,
   PR_CREATION: 10,
   NOTIFICATION: 10,
+  HEALTH_CHECK: 3,
 } as const;

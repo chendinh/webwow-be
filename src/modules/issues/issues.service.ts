@@ -26,7 +26,7 @@ const MSG = {
     'Bạn đã đạt giới hạn 20 yêu cầu mỗi ngày. Vui lòng thử lại vào ngày mai.',
 } as const;
 
-const DAILY_ISSUE_LIMIT = 20;
+const DAILY_ISSUE_LIMIT = parseInt(process.env.DAILY_ISSUE_LIMIT ?? '20', 10);
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 

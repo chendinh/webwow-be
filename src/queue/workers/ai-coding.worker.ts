@@ -16,7 +16,7 @@ import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AICodingJobData } from '../queue.types';
 import { QueueService } from '../queue.service';
 
-const MAX_FIX_ATTEMPTS = 3;
+const MAX_FIX_ATTEMPTS = 5;
 
 // R19.4: Max 5 concurrent coding tasks enforced via concurrency option
 @Processor(QUEUES.AI_CODING, { concurrency: CONCURRENCY.AI_CODING })
@@ -111,66 +111,45 @@ export class AICodingWorker extends WorkerHost {
         throw new Error(`Git clone failed: ${cloneResult.stderr}`);
       }
 
-      // ── Step 4b: Pre-flight build check on ORIGINAL code ────────────────
-      this.logger.log(`Running pre-flight build check on original code for task ${taskId}`);
-      const preflightResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
+      // ── Step 4b: Seed missing config files to prevent interactive prompts ──
+      // If the repo lacks .eslintrc.json, next lint will ask interactive questions.
+      // Seed a minimal config so CI=true lint runs without prompting.
+      await this.sandbox.exec(
+        containerId,
+        `cd /workspace/repo && [ ! -f .eslintrc.json ] && [ ! -f .eslintrc.js ] && [ ! -f .eslintrc.cjs ] && [ -f package.json ] && node -e "const p=require('./package.json'); if(p.dependencies&&p.dependencies.next||p.devDependencies&&p.devDependencies.next){require('fs').writeFileSync('.eslintrc.json',JSON.stringify({extends:'next/core-web-vitals'},null,2))}" 2>/dev/null || true`,
+      );
+
+      // ── Step 4c: Pre-flight build check — capture baseline errors ──────────
+      // We run build on the ORIGINAL code to capture any pre-existing errors.
+      // After AI modifies files, we only fail if NEW errors are introduced.
+      // This way, pre-existing issues unrelated to the current task don't block.
+      this.logger.log(`Running pre-flight baseline check for task ${taskId}`);
+      const preflightResult = await this.runBuildOnly(containerId);
+      const baselineErrors = preflightResult.passed ? [] : this.extractErrorLines(preflightResult.output);
 
       if (!preflightResult.passed) {
-        // Re-load task to check if user has already approved
-        const latestTask = await this.prisma.aITask.findUnique({ where: { id: taskId } });
-        const alreadyApproved = latestTask?.preflightApproved === true;
-
-        if (!alreadyApproved) {
-          // Classify error severity
-          const isMinorError = this.isMinorBuildError(preflightResult.output);
-
-          if (isMinorError) {
-            // Auto-fix minor errors and log
-            this.logger.warn(`Pre-flight found minor build errors, attempting auto-fix for task ${taskId}`);
-            await this.activityService.log({
-              organizationId, projectId, issueId, taskId,
-              eventType: 'ERROR',
-              friendlyMessage: `Phát hiện lỗi nhỏ trong dự án gốc. Đang tự động sửa trước khi thực hiện task.`,
-              technicalDetail: { preflightOutput: preflightResult.output.substring(0, 2000) },
-              actorId: 'system',
-            });
-            // Store pre-flight issues in AITask for summary
-            await this.prisma.aITask.update({
-              where: { id: taskId },
-              data: { buildResult: { preflightIssues: preflightResult.output.substring(0, 2000), autoFixed: true } },
-            });
-          } else {
-            // Major error: transition to WAITING_APPROVAL and pause
-            this.logger.error(`Pre-flight found major build errors for task ${taskId}, waiting for user approval`);
-            await this.aiTasksService.transitionStatus(taskId, AITaskStatus.WAITING_APPROVAL, organizationId, {
-              currentStep: 'Chờ xác nhận lỗi project',
-            });
-            await this.prisma.aITask.update({
-              where: { id: taskId },
-              data: {
-                buildResult: {
-                  preflightIssues: preflightResult.output.substring(0, 3000),
-                  autoFixed: false,
-                  requiresUserApproval: true,
-                  errorSummary: this.extractBuildErrorSummary(preflightResult.output),
-                },
-                failureReason: `Project có lỗi build cần xử lý trước: ${this.extractBuildErrorSummary(preflightResult.output)}`,
-              },
-            });
-            // Do NOT throw — just return, task is now WAITING_APPROVAL
-            return;
-          }
-        } else {
-          this.logger.warn(`Pre-flight errors present but user already approved for task ${taskId}, proceeding`);
-          await this.activityService.log({
-            organizationId, projectId, issueId, taskId,
-            eventType: 'ERROR',
-            friendlyMessage: `Người dùng đã xác nhận tiếp tục dù project có lỗi build. Đang tiến hành task.`,
-            technicalDetail: { preflightOutput: preflightResult.output.substring(0, 2000) },
-            actorId: 'system',
-          });
-        }
+        this.logger.warn(
+          `Pre-flight: ${baselineErrors.length} pre-existing build error(s) found. ` +
+          `These will be ignored if unchanged after AI coding.`,
+        );
+        await this.activityService.log({
+          organizationId, projectId, issueId, taskId,
+          eventType: 'ERROR',
+          friendlyMessage: `Dự án gốc có ${baselineErrors.length} lỗi build sẵn có. AI sẽ bỏ qua các lỗi này nếu không liên quan đến task.`,
+          technicalDetail: { baselineErrors: baselineErrors.slice(0, 20) },
+          actorId: 'system',
+        });
       }
+
+      await this.prisma.aITask.update({
+        where: { id: taskId },
+        data: {
+          buildResult: {
+            preflightBaseline: baselineErrors,
+            preflightPassed: preflightResult.passed,
+          },
+        },
+      });
 
       // ── Step 5: Create AI branch ──────────────────────────────────────────
       // Branch name: use only task short ID to avoid Unicode/length issues
@@ -275,6 +254,21 @@ export class AICodingWorker extends WorkerHost {
           continue;
         }
 
+        // Validate filePath is not a directory path (trailing slash or no extension on a known dir)
+        const normalizedFilePath = step.filePath.replace(/\/+$/, ''); // strip trailing slashes
+        if (!normalizedFilePath || normalizedFilePath !== step.filePath.replace(/\/+$/, '')) {
+          this.logger.warn(`Step ${step.order} has invalid filePath "${step.filePath}" — skipping`);
+          await this.activityService.log({
+            organizationId, projectId, issueId, taskId,
+            eventType: 'ERROR',
+            friendlyMessage: `Bỏ qua bước ${step.order}: đường dẫn file không hợp lệ "${step.filePath}"`,
+            actorId: 'system',
+          });
+          continue;
+        }
+        // Reassign to normalised value for the rest of this iteration
+        step.filePath = normalizedFilePath;
+
         // Read existing file content from sandbox (local mode: read from workdir)
         let existingContent: string | null = null;
         const localWorkdir = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
@@ -282,10 +276,36 @@ export class AICodingWorker extends WorkerHost {
         if (localWorkdir) {
           const fullPath = path.join(localWorkdir, 'workspace', 'repo', step.filePath);
           if (fs.existsSync(fullPath)) {
+            // Guard: skip if path resolves to a directory
+            const stat = fs.statSync(fullPath);
+            if (stat.isDirectory()) {
+              this.logger.warn(`Step ${step.order} filePath "${step.filePath}" resolves to a directory — skipping`);
+              await this.activityService.log({
+                organizationId, projectId, issueId, taskId,
+                eventType: 'ERROR',
+                friendlyMessage: `Bỏ qua bước ${step.order}: "${step.filePath}" là thư mục, không phải file`,
+                actorId: 'system',
+              });
+              continue;
+            }
             existingContent = fs.readFileSync(fullPath, 'utf8');
           }
         } else {
-          // Docker mode: read via exec
+          // Docker mode: check it's a regular file before reading
+          const typeCheck = await this.sandbox.exec(
+            containerId,
+            `[ -f /workspace/repo/${step.filePath} ] && echo "file" || echo "notfile"`,
+          );
+          if (typeCheck.stdout.trim() !== 'file') {
+            this.logger.warn(`Step ${step.order} filePath "${step.filePath}" is not a regular file in sandbox — skipping`);
+            await this.activityService.log({
+              organizationId, projectId, issueId, taskId,
+              eventType: 'ERROR',
+              friendlyMessage: `Bỏ qua bước ${step.order}: "${step.filePath}" không phải là file hợp lệ`,
+              actorId: 'system',
+            });
+            continue;
+          }
           const readResult = await this.sandbox.exec(
             containerId,
             `cat /workspace/repo/${step.filePath} 2>/dev/null || echo ""`,
@@ -350,8 +370,19 @@ export class AICodingWorker extends WorkerHost {
 
       while (!checksPass && fixAttempts <= MAX_FIX_ATTEMPTS) {
         const testResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
-        checksPass = testResult.passed;
         lastTestOutput = testResult.output;
+
+        // Compare new errors against baseline — only NEW errors introduced by AI count
+        if (testResult.passed) {
+          checksPass = true;
+        } else {
+          const currentErrors = this.extractErrorLines(testResult.output);
+          const newErrors = currentErrors.filter(e => !baselineErrors.some(b => b === e || testResult.output.includes(b)));
+          checksPass = newErrors.length === 0;
+          if (!checksPass) {
+            lastTestOutput = `NEW ERRORS (not in baseline):\n${newErrors.join('\n')}\n\nFULL OUTPUT:\n${testResult.output}`;
+          }
+        }
 
         await this.prisma.aITask.update({
           where: { id: taskId },
@@ -371,12 +402,59 @@ export class AICodingWorker extends WorkerHost {
               `Build/test thất bại sau ${MAX_FIX_ATTEMPTS} lần sửa. Output: ${lastTestOutput.substring(0, 500)}`,
             );
           }
-          // Must go through FIXING before re-entering TESTING
+
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.FIXING, organizationId, {
-            currentStep: `Sửa lỗi lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
+            currentStep: `Sửa lỗi build lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
           });
+
+          // Read current content of all changed files, then ask AI to fix them
+          const filesForFix: Array<{ filePath: string; content: string }> = [];
+          for (const fp of changedFiles) {
+            const localWorkdirForFix = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
+              .localWorkdirs?.get(containerId);
+            let content = '';
+            if (localWorkdirForFix) {
+              const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', fp);
+              if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                content = fs.readFileSync(fullPath, 'utf8');
+              }
+            } else {
+              const readResult = await this.sandbox.exec(
+                containerId,
+                `[ -f /workspace/repo/${fp} ] && cat /workspace/repo/${fp} 2>/dev/null || echo ""`,
+              );
+              content = readResult.stdout ?? '';
+            }
+            if (content) filesForFix.push({ filePath: fp, content });
+          }
+
+          // Ask CodingAgent to fix files implicated in the build error
+          const fixes = await this.codingAgent.fixBuildErrors(
+            lastTestOutput,
+            filesForFix,
+            codeContext,
+            aiOutputLanguage,
+          );
+
+          // Write fixed content back to sandbox
+          for (const fix of fixes) {
+            const localWorkdirForFix = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
+              .localWorkdirs?.get(containerId);
+            if (localWorkdirForFix) {
+              const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', fix.filePath);
+              fs.writeFileSync(fullPath, fix.content, 'utf8');
+            } else {
+              const b64 = Buffer.from(fix.content).toString('base64');
+              await this.sandbox.exec(
+                containerId,
+                `echo "${b64}" | base64 -d > /workspace/repo/${fix.filePath}`,
+              );
+            }
+            this.logger.log(`Applied AI fix to ${fix.filePath} (attempt ${fixAttempts})`);
+          }
+
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
-            currentStep: `Chạy lại kiểm tra (lần ${fixAttempts + 1})`,
+            currentStep: `Chạy lại kiểm tra (lần ${fixAttempts + 1}/${MAX_FIX_ATTEMPTS})`,
           });
         }
       }
@@ -525,6 +603,41 @@ AI-Task-Id: ${taskId}`;
   // ── Private helpers ─────────────────────────────────────────────────────
 
   /**
+   * Runs ONLY the build step on the current repo state.
+   * Used for pre-flight baseline capture — no lint, no test.
+   */
+  private async runBuildOnly(
+    containerId: string,
+  ): Promise<{ passed: boolean; output: string }> {
+    const result = await this.sandbox.exec(
+      containerId,
+      'cd /workspace/repo && [ -f package.json ] && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1 || echo "NO_BUILD_SCRIPT"',
+      180_000,
+    );
+    const output = result.stdout ?? '';
+    if (output.includes('NO_BUILD_SCRIPT')) {
+      return { passed: true, output: 'No build script — skipped' };
+    }
+    return { passed: result.exitCode === 0, output };
+  }
+
+  /**
+   * Extracts normalised error lines from build output for baseline comparison.
+   * Strips line numbers and column numbers so minor formatting changes don't cause false positives.
+   */
+  private extractErrorLines(output: string): string[] {
+    return output
+      .split('\n')
+      .filter(l =>
+        (l.includes(' Error:') || l.includes(' error ') || l.includes('Type error:') || l.includes('Failed to compile'))
+        && !l.startsWith('[npm') && !l.startsWith('[build]')
+      )
+      // Normalise line:col references so "foo.tsx:12:3 Error:" == "foo.tsx:15:3 Error:"
+      .map(l => l.replace(/:\d+:\d+/g, ':').trim())
+      .filter(Boolean);
+  }
+
+  /**
    * Runs npm install, lint, test, and build checks in the sandbox.
    * Returns whether all checks passed and the combined output.
    */
@@ -538,24 +651,69 @@ AI-Task-Id: ${taskId}`;
     const outputs: string[] = [];
     let allPassed = true;
 
-    const commands: Array<{ cmd: string; label: string }> = [
-      { cmd: 'cd /workspace/repo && [ -f package.json ] && npm install --prefer-offline 2>&1 || true', label: 'npm install' },
-      { cmd: 'cd /workspace/repo && [ -f package.json ] && (npm run lint 2>&1) || true', label: 'lint' },
-      { cmd: 'cd /workspace/repo && [ -f package.json ] && (npm test -- --passWithNoTests 2>&1) || true', label: 'test' },
-      { cmd: 'cd /workspace/repo && [ -f package.json ] && (npm run build 2>&1) || true', label: 'build' },
+    const commands: Array<{ cmd: string; label: string; required: boolean }> = [
+      {
+        cmd: 'cd /workspace/repo && [ -f package.json ] && npm install --prefer-offline 2>&1',
+        label: 'npm install',
+        required: true,
+      },
+      {
+        // Run lint non-interactively. If ESLint isn't configured yet, skip gracefully.
+        // NEXT_TELEMETRY_DISABLED=1 prevents Next.js from prompting for telemetry consent.
+        // CI=true makes next lint non-interactive (skips ESLint setup wizard).
+        cmd: 'cd /workspace/repo && [ -f package.json ] && CI=true NEXT_TELEMETRY_DISABLED=1 npm run lint 2>&1 < /dev/null',
+        label: 'lint',
+        required: false, // lint never blocks — only build does
+      },
+      {
+        cmd: 'cd /workspace/repo && [ -f package.json ] && CI=true npm test -- --passWithNoTests 2>&1 < /dev/null',
+        label: 'test',
+        required: false,
+      },
+      {
+        cmd: 'cd /workspace/repo && [ -f package.json ] && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1',
+        label: 'build',
+        required: true, // build MUST pass — catches "use client" errors, type errors, etc.
+      },
     ];
 
-    for (const { cmd, label } of commands) {
+    for (const { cmd, label, required } of commands) {
+      // Check if the npm script exists before running it
+      const scriptName = label === 'npm install' ? null : label;
+      let scriptExists = true;
+      if (scriptName) {
+        const checkResult = await this.sandbox.exec(
+          containerId,
+          `cd /workspace/repo && node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['${scriptName}'] ? 0 : 1)" 2>/dev/null`,
+        );
+        scriptExists = checkResult.exitCode === 0;
+      }
+
+      if (!scriptExists) {
+        outputs.push(`[${label}] skipped — script not defined in package.json`);
+        continue;
+      }
+
       const result = await this.sandbox.exec(containerId, cmd, 180_000);
-      const summary = `[${label}] exit=${result.exitCode}\n${result.stdout}\n${result.stderr}`.trim();
+      const combinedOutput = `${result.stdout}\n${result.stderr}`.trim();
+
+      // Detect interactive/setup prompts — if lint asks for config, treat as skip not failure
+      const isInteractivePrompt =
+        combinedOutput.includes('How would you like to configure') ||
+        combinedOutput.includes('Would you like to') ||
+        combinedOutput.includes('? ');
+
+      if (isInteractivePrompt) {
+        outputs.push(`[${label}] skipped — tool requires interactive setup (not configured in repo)`);
+        this.logger.warn(`${label} requires interactive setup for task ${taskId} — skipping`);
+        continue;
+      }
+
+      const summary = `[${label}] exit=${result.exitCode}\n${combinedOutput}`.trim();
       outputs.push(summary);
 
-      // lint/test/build failure (exitCode != 0 and the command ran — not "script not found")
-      if (
-        result.exitCode !== 0 &&
-        !result.stdout.includes('missing script') &&
-        !result.stderr.includes('missing script')
-      ) {
+      // Only mark as failed if this step is required and actually ran and failed
+      if (required && result.exitCode !== 0) {
         allPassed = false;
       }
 

@@ -68,4 +68,52 @@ export class CodingAgent {
     const subject = plan.summary.slice(0, 72).replace(/\n/g, ' ');
     return `${type}(${scope}): ${subject}`;
   }
+
+  /**
+   * Given a build error output and the list of changed files with their current content,
+   * generate corrected versions for each file implicated in the error.
+   */
+  async fixBuildErrors(
+    buildErrorOutput: string,
+    changedFiles: Array<{ filePath: string; content: string }>,
+    context: { framework: string; language: string },
+    aiOutputLanguage = 'en',
+  ): Promise<CodeChange[]> {
+    const fixes: CodeChange[] = [];
+
+    for (const file of changedFiles) {
+      // Only attempt fix for files that appear in the error output
+      const fileAppearsinError =
+        buildErrorOutput.includes(file.filePath) ||
+        buildErrorOutput.includes(file.filePath.split('/').pop() ?? '');
+
+      if (!fileAppearsinError) continue;
+
+      this.logger.log(`Attempting AI fix for ${file.filePath}`);
+
+      const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
+      const userPrompt = CodingPrompt.buildFix(buildErrorOutput, file.filePath, file.content, context);
+
+      try {
+        const response = await this.aiProvider.call<string>(systemPrompt, userPrompt, {
+          maxTokens: 4096,
+          temperature: 0.05,
+        });
+
+        const content = typeof response.content === 'string'
+          ? response.content
+          : JSON.stringify(response.content);
+
+        fixes.push({ filePath: file.filePath, content, type: 'MODIFY' });
+
+        this.logger.log(
+          `Fix generated for ${file.filePath}: ${response.inputTokens + response.outputTokens} tokens`,
+        );
+      } catch (err) {
+        this.logger.warn(`Failed to generate fix for ${file.filePath}: ${String(err)}`);
+      }
+    }
+
+    return fixes;
+  }
 }

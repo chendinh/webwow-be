@@ -31,6 +31,11 @@ export class AnalysisAgent {
       detectedModules: unknown[];
       mainDependencies: unknown[];
       buildScripts: unknown | null;
+      directoryStructure?: {
+        fileTree?: string[];
+        readmeSnippet?: string | null;
+        [key: string]: unknown;
+      } | null;
     },
     language = 'en',
   ): Promise<AnalysisAgentResult> {

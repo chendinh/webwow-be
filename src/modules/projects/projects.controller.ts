@@ -151,20 +151,33 @@ export class ProjectsController {
 
   @Post(':projectId/reanalyze')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({
-    summary: 'Kích hoạt phân tích lại dự án',
-    description: 'Enqueue lại tác vụ PROJECT_ANALYSIS. Bị chặn nếu đang có AITask đang chạy.',
-  })
-  @ApiParam({ name: 'projectId', description: 'ID của dự án' })
-  @ApiQuery({ name: 'organizationId', required: true, description: 'ID của tổ chức' })
-  @ApiResponse({ status: 204, description: 'Đã enqueue tác vụ phân tích lại.' })
-  @ApiResponse({ status: 401, description: 'Chưa xác thực.' })
-  @ApiResponse({ status: 404, description: 'Dự án không tồn tại.' })
-  @ApiResponse({ status: 409, description: 'Đang có tác vụ AI đang chạy cho dự án này.' })
   async reanalyze(
     @Param('projectId') projectId: string,
     @Query('organizationId') organizationId: string,
   ): Promise<void> {
     await this.projectsService.reanalyze(projectId, organizationId);
+  }
+
+  // ── POST /api/projects/:projectId/health-check ────────────────────────────────
+
+  @Post(':projectId/health-check')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Kích hoạt health check cho dự án' })
+  async triggerHealthCheck(
+    @Param('projectId') projectId: string,
+    @Query('organizationId') organizationId: string,
+  ): Promise<void> {
+    await this.projectsService.triggerHealthCheck(projectId, organizationId);
+  }
+
+  // ── GET /api/projects/:projectId/health-check ─────────────────────────────────
+
+  @Get(':projectId/health-check')
+  @ApiOperation({ summary: 'Lấy kết quả health check mới nhất' })
+  async getHealthCheck(
+    @Param('projectId') projectId: string,
+    @Query('organizationId') organizationId: string,
+  ) {
+    return this.projectsService.getHealthCheck(projectId, organizationId);
   }
 }

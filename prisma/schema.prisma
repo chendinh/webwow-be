@@ -213,6 +213,12 @@ model Project {
   githubInstallationId String
   defaultBranch        String          @default("main")
   status               ProjectStatus   @default(PENDING_ANALYSIS)
+
+  // Health check
+  healthCheckStatus    String?         // null | "RUNNING" | "DONE" | "FAILED"
+  healthCheckResult    Json?           // HealthCheckResult JSON
+  healthCheckedAt      DateTime?
+
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
   deletedAt            DateTime?

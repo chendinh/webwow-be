@@ -165,7 +165,53 @@ export class ProjectsService {
     });
   }
 
-  // ── Reanalyze ─────────────────────────────────────────────────────────────────
+  // ── Health Check ──────────────────────────────────────────────────────────────
+
+  /**
+   * Triggers a health check scan for the project.
+   * Returns immediately — result is stored async via the worker.
+   */
+  async triggerHealthCheck(projectId: string, organizationId: string): Promise<void> {
+    const project = await this.findById(projectId, organizationId);
+
+    // Prevent concurrent runs
+    if (project.healthCheckStatus === 'RUNNING') {
+      throw new Error('Health check đang chạy. Vui lòng đợi hoàn thành.');
+    }
+
+    await this.prisma.project.update({
+      where: { id: projectId },
+      data: { healthCheckStatus: 'RUNNING' },
+    });
+
+    this.queueService
+      .enqueueHealthCheck({
+        projectId,
+        organizationId,
+        repoFullName: project.githubRepoFullName,
+        branch: project.defaultBranch,
+        githubInstallationId: project.githubInstallationId,
+      })
+      .catch((err: unknown) => {
+        this.logger.warn(`Failed to enqueue health check for project ${projectId}: ${String(err)}`);
+      });
+  }
+
+  /**
+   * Returns the latest health check result for a project.
+   */
+  async getHealthCheck(projectId: string, organizationId: string): Promise<{
+    status: string | null;
+    result: unknown;
+    checkedAt: Date | null;
+  }> {
+    const project = await this.findById(projectId, organizationId);
+    return {
+      status: project.healthCheckStatus ?? null,
+      result: project.healthCheckResult ?? null,
+      checkedAt: project.healthCheckedAt ?? null,
+    };
+  }
 
   /**
    * Re-triggers PROJECT_ANALYSIS for the project.

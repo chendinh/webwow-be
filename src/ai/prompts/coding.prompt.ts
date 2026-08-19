@@ -54,4 +54,26 @@ ${existingContent ? `EXISTING FILE CONTENT:\n${existingContent}` : 'This is a ne
 
 Return ONLY the complete new file content as plain text. No markdown, no code blocks, no explanation.`;
   }
+
+  static buildFix(
+    buildError: string,
+    filePath: string,
+    existingContent: string,
+    context: { framework: string; language: string },
+  ): string {
+    return `The following build/compile error occurred. Fix the file to resolve it.
+
+FILE: ${filePath}
+Framework: ${context.framework}
+Language: ${context.language}
+
+BUILD ERROR OUTPUT:
+${buildError.substring(0, 2000)}
+
+CURRENT FILE CONTENT:
+${existingContent}
+
+Return ONLY the complete corrected file content as plain text. No markdown, no code blocks, no explanation.
+Fix ONLY what is needed to resolve the build error — do not change unrelated code.`;
+  }
 }

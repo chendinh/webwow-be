@@ -8,6 +8,7 @@ import { ProjectAnalysisWorker } from './workers/project-analysis.worker';
 import { AIAnalysisWorker } from './workers/ai-analysis.worker';
 import { AICodingWorker } from './workers/ai-coding.worker';
 import { PRCreationWorker } from './workers/pr-creation.worker';
+import { HealthCheckWorker } from './workers/health-check.worker';
 import { ProjectsModule } from '../modules/projects/projects.module';
 import { ActivityModule } from '../modules/activity/activity.module';
 import { GithubModule } from '../modules/github/github.module';
@@ -32,6 +33,7 @@ import { AITasksModule } from '../modules/ai-tasks/ai-tasks.module';
       { name: QUEUES.AI_CODING },
       { name: QUEUES.PR_CREATION },
       { name: QUEUES.NOTIFICATION },
+      { name: QUEUES.HEALTH_CHECK },
     ),
     forwardRef(() => ProjectsModule),
     GithubModule,
@@ -40,7 +42,7 @@ import { AITasksModule } from '../modules/ai-tasks/ai-tasks.module';
     forwardRef(() => AITasksModule),
     ActivityModule,
   ],
-  providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker],
+  providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker, HealthCheckWorker],
   exports: [BullModule, QueueService],
 })
 export class QueueModule {}

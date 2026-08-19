@@ -3,7 +3,14 @@ import { z } from 'zod';
 export const ImplementationStepSchema = z.object({
   order: z.number().int().positive(),
   type: z.enum(['CREATE', 'MODIFY', 'DELETE']),
-  filePath: z.string().min(1),
+  filePath: z
+    .string()
+    .min(1)
+    .transform(p => p.replace(/\/+$/, '')) // strip trailing slashes
+    .refine(
+      p => /\.[a-zA-Z0-9]+$/.test(p),
+      { message: 'filePath must be a file with an extension, not a directory path' },
+    ),
   description: z.string().min(1),
   testRequired: z.boolean(),
   rollbackNote: z.string().optional(),

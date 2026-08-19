@@ -49,13 +49,28 @@ CRITICAL RULES:
       detectedModules: unknown[];
       mainDependencies: unknown[];
       buildScripts: unknown | null;
+      directoryStructure?: {
+        fileTree?: string[];
+        readmeSnippet?: string | null;
+        [key: string]: unknown;
+      } | null;
     },
   ): string {
+    const fileTree = projectContext.directoryStructure?.fileTree;
+    const fileTreeSection = fileTree && fileTree.length > 0
+      ? `\nREPO FILE TREE (actual files — use ONLY these paths):\n${fileTree.slice(0, 300).join('\n')}`
+      : '\nREPO FILE TREE: Not available — do NOT fabricate file paths.';
+
+    const readmeSnippet = projectContext.directoryStructure?.readmeSnippet;
+    const readmeSection = readmeSnippet
+      ? `\nREADME EXCERPT:\n${readmeSnippet}`
+      : '';
+
     return `PROJECT CONTEXT:
 Language: ${projectContext.primaryLanguage ?? 'unknown'}
 Frameworks: ${projectContext.frameworks.join(', ') || 'none detected'}
 Detected modules: ${JSON.stringify(projectContext.detectedModules)}
-Main dependencies: ${JSON.stringify(projectContext.mainDependencies)}
+Main dependencies: ${JSON.stringify(projectContext.mainDependencies)}${fileTreeSection}${readmeSection}
 
 CUSTOMER REQUEST:
 Title: ${issue.title}
@@ -65,8 +80,8 @@ Priority: ${issue.priority}
 
 Analyze this request and return JSON matching this schema:
 {
-  "affectedFiles": string[],       // files that need to change (only existing files)
-  "aiDiagnosis": string,           // clear technical explanation
+  "affectedFiles": string[],       // files that need to change — ONLY use paths from the FILE TREE above
+  "aiDiagnosis": string,           // clear technical explanation referencing actual file paths
   "riskLevel": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL",
   "complexity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL",
   "feasibilityNotes": string,      // can AI implement this? what are the challenges?

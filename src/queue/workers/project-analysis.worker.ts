@@ -253,6 +253,36 @@ export class ProjectAnalysisWorker extends WorkerHost {
       const projectVersion =
         typeof safePackageJson?.version === 'string' ? safePackageJson.version : null;
 
+      // Crawl the repo's file tree (up to 2 levels deep) to give AI real file paths
+      const fileTree: string[] = [];
+      try {
+        const crawlDir = async (path: string, depth: number): Promise<void> => {
+          if (depth > 2) return;
+          const { data } = await octokit.request(
+            'GET /repos/{owner}/{repo}/contents/{path}',
+            { owner, repo, path },
+          );
+          if (!Array.isArray(data)) return;
+          for (const entry of data) {
+            // Skip hidden dirs, node_modules, dist, build artifacts
+            if (
+              entry.name.startsWith('.') ||
+              ['node_modules', 'dist', 'build', 'coverage', '.next', '.git', '__pycache__'].includes(entry.name)
+            ) continue;
+            const entryPath = path ? `${path}/${entry.name}` : entry.name;
+            if (entry.type === 'dir') {
+              fileTree.push(`${entryPath}/`);
+              await crawlDir(entryPath, depth + 1);
+            } else {
+              fileTree.push(entryPath);
+            }
+          }
+        };
+        await crawlDir('', 0);
+      } catch (crawlErr) {
+        this.logger.warn(`File tree crawl failed for ${repoFullName}: ${String(crawlErr)}`);
+      }
+
       const directoryStructure = {
         name: projectName,
         version: projectVersion,
@@ -267,6 +297,8 @@ export class ProjectAnalysisWorker extends WorkerHost {
           ...(ciWorkflowRaw !== null ? ['.github/workflows'] : []),
         ],
         readmeSnippet: safeReadme ? safeReadme.slice(0, 500) : null,
+        // Actual file tree — the most important context for AI planning
+        fileTree,
       };
 
       // ── Step 6: Detect modules ────────────────────────────────────────────

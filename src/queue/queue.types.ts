@@ -34,3 +34,11 @@ export interface NotificationJobData {
   body: string;
   organizationId: string;
 }
+
+export interface HealthCheckJobData {
+  projectId: string;
+  organizationId: string;
+  repoFullName: string;
+  branch: string;
+  githubInstallationId: string;
+}
