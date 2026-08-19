@@ -56,24 +56,63 @@ Return ONLY the complete new file content as plain text. No markdown, no code bl
   }
 
   static buildFix(
-    buildError: string,
-    filePath: string,
-    existingContent: string,
+    buildErrors: string[],
+    allChangedFiles: Array<{ filePath: string; content: string }>,
+    repoFileTree: string[],
     context: { framework: string; language: string },
+    fullBuildOutput?: string,
   ): string {
-    return `The following build/compile error occurred. Fix the file to resolve it.
+    const fileContentsSection = allChangedFiles
+      .map(f => `=== ${f.filePath} ===\n${f.content}`)
+      .join('\n\n');
 
-FILE: ${filePath}
-Framework: ${context.framework}
-Language: ${context.language}
+    const fileTreeSection = repoFileTree.length > 0
+      ? repoFileTree.slice(0, 200).join('\n')
+      : '(not available)';
 
-BUILD ERROR OUTPUT:
-${buildError.substring(0, 2000)}
+    const errorSection = buildErrors.length > 0
+      ? buildErrors.join('\n')
+      : '(see full build output below)';
 
-CURRENT FILE CONTENT:
-${existingContent}
+    const fullOutputSection = fullBuildOutput
+      ? `\nFULL BUILD OUTPUT (for additional context):\n${fullBuildOutput.substring(0, 3000)}`
+      : '';
 
-Return ONLY the complete corrected file content as plain text. No markdown, no code blocks, no explanation.
-Fix ONLY what is needed to resolve the build error — do not change unrelated code.`;
+    return `You are fixing build errors in a ${context.framework} (${context.language}) project.
+
+BUILD ERRORS TO FIX:
+${errorSection}${fullOutputSection}
+
+REPO FILE TREE (files that ACTUALLY EXIST):
+${fileTreeSection}
+
+CURRENT CONTENT OF ALL CHANGED FILES:
+${fileContentsSection}
+
+INSTRUCTIONS:
+1. Analyze ALL errors above together
+2. For "Module not found" errors: check the REPO FILE TREE — if the module doesn't exist, CREATE it; if it exists at a different path, fix the import
+3. For "use client" errors: add "use client" directive to the correct file
+4. For type errors: fix the type in the relevant file
+5. Return a JSON array of ALL files that need to be created or modified:
+
+[
+  {
+    "filePath": "src/hooks/useTheme.ts",
+    "type": "CREATE",
+    "content": "complete file content here"
+  },
+  {
+    "filePath": "src/components/ui/card.tsx",
+    "type": "MODIFY",
+    "content": "complete corrected file content here"
+  }
+]
+
+RULES:
+- Return ONLY the JSON array, no markdown, no explanation
+- Include the COMPLETE file content for every file (not just the changed parts)
+- Only include files that actually need changes
+- Use correct import paths based on the REPO FILE TREE above`;
   }
 }

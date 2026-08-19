@@ -51,6 +51,7 @@ enum IssuePriority {
 enum IssueStatus {
   ANALYZING
   ANALYSIS_FAILED
+  OPTIONS_READY        // has implementationOptions, waiting for user to pick one
   PLAN_READY
   APPROVED
   REJECTED
@@ -302,10 +303,16 @@ model Issue {
 
   // AI Analysis results
   aiDiagnosis        String?
+  plainDiagnosis     String?          // Non-technical explanation for non-dev users
   affectedFiles      String[]
   riskLevel          ComplexityLevel?
   complexity         ComplexityLevel?
   feasibilityNotes   String?
+
+  // Implementation options (shown to user before planning)
+  implementationOptions Json?          // ImplementationOption[] — user picks one
+  selectedOptionId   String?           // Which option the user chose
+  clarifyingQuestions Json?            // Questions AI wants to ask if ambiguous
 
   // Plan
   implementationPlan Json?           // ImplementationPlan JSON

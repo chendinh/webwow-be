@@ -16,16 +16,17 @@ export class IssueAnalysisPrompt {
   static buildSystem(language = 'en'): string {
     const langInstruction =
       language !== 'en'
-        ? `\n\nIMPORTANT: Write all text fields (aiDiagnosis, feasibilityNotes) in ${getLanguageName(language)}. Keep technical terms (file paths, function names, code) in English.`
+        ? `\n\nIMPORTANT: Write ALL text fields in ${getLanguageName(language)} EXCEPT file paths, function names, and code identifiers. This includes aiDiagnosis, plainDiagnosis, feasibilityNotes, option titles, descriptions, pros, cons, and clarifyingQuestions.`
         : '';
 
-    return `You are a senior software engineer analyzing a customer issue request for an existing codebase.${langInstruction}
+    return `You are a senior software engineer AND a product consultant analyzing a customer request.${langInstruction}
 
-Your job is to:
-1. Understand the customer's request (written in natural language, possibly Vietnamese)
-2. Identify which files in the codebase need to change
-3. Assess feasibility and estimate complexity
-4. Identify technical risks
+The customer may NOT be a developer. Your job is to:
+1. Understand what they actually want (translate business language → technical spec)
+2. Identify which files need to change based on the ACTUAL file tree provided
+3. Generate 2-3 concrete implementation options they can choose from
+4. Explain everything in TWO ways: technical (for devs) AND plain language (for non-devs)
+5. Ask clarifying questions if the request is ambiguous
 
 CRITICAL RULES:
 - Return ONLY valid JSON matching the provided schema
@@ -33,7 +34,9 @@ CRITICAL RULES:
 - ONLY reference files that actually exist in the PROJECT CONTEXT provided
 - NEVER fabricate file names, function names, or module names
 - If you cannot identify specific files, return an empty affectedFiles array
-- Assess complexity honestly: LOW = trivial change, MEDIUM = moderate refactoring, HIGH = significant architecture change, CRITICAL = risky breaking change`;
+- Always provide both "aiDiagnosis" (technical) AND "plainDiagnosis" (jargon-free)
+- implementationOptions MUST have 2-3 distinct approaches when there are meaningful trade-offs
+- Each option must have a "plainTitle" and "plainDescription" a non-developer can understand`;
   }
 
   static buildUser(
@@ -78,15 +81,32 @@ Description: ${issue.description}
 Type: ${issue.type}
 Priority: ${issue.priority}
 
-Analyze this request and return JSON matching this schema:
+Return JSON matching this schema exactly:
 {
-  "affectedFiles": string[],       // files that need to change — ONLY use paths from the FILE TREE above
-  "aiDiagnosis": string,           // clear technical explanation referencing actual file paths
+  "affectedFiles": string[],
+  "aiDiagnosis": string,           // technical explanation with file paths
+  "plainDiagnosis": string,        // same info but NO jargon — explain like to a business owner
   "riskLevel": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL",
   "complexity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL",
-  "feasibilityNotes": string,      // can AI implement this? what are the challenges?
-  "estimatedTokens": number,       // rough estimate for implementation
-  "relatedModules": string[]       // module names involved
+  "feasibilityNotes": string,
+  "estimatedTokens": number,
+  "relatedModules": string[],
+  "implementationOptions": [       // 2-3 distinct ways to implement this
+    {
+      "id": "option_a",
+      "title": string,             // short technical title
+      "plainTitle": string,        // non-technical title e.g. "Nút chuyển đổi trên thanh menu"
+      "description": string,       // technical details
+      "plainDescription": string,  // explain in plain language what this looks like/feels like for users
+      "pros": string[],            // benefits in plain language
+      "cons": string[],            // drawbacks in plain language
+      "complexity": "LOW"|"MEDIUM"|"HIGH",
+      "estimatedMinutes": number,
+      "affectedFiles": string[],   // ONLY files from the FILE TREE above
+      "recommended": boolean       // true for the best balanced option
+    }
+  ],
+  "clarifyingQuestions": string[]  // questions to ask if the request needs more detail (max 2, can be empty [])
 }`;
   }
 }

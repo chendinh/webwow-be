@@ -132,7 +132,51 @@ export class AIAnalysisWorker extends WorkerHost {
         },
       });
 
-      // ── Step 4: READ affected files from GitHub (Read-then-Plan) ────────
+      // ── Step 4: If analysis returned implementation options → pause for user choice ──
+      // Non-dev users see 2-3 options in plain language and pick one before planning.
+      if (analysisResult.implementationOptions && analysisResult.implementationOptions.length > 0) {
+        this.logger.log(
+          `Issue ${issueId}: ${analysisResult.implementationOptions.length} options generated — waiting for user choice`,
+        );
+
+        await this.prisma.issue.update({
+          where: { id: issueId },
+          data: {
+            status: 'OPTIONS_READY',
+            aiDiagnosis: analysisResult.aiDiagnosis,
+            plainDiagnosis: analysisResult.plainDiagnosis ?? null,
+            affectedFiles: analysisResult.affectedFiles,
+            riskLevel: analysisResult.riskLevel,
+            complexity: analysisResult.complexity,
+            feasibilityNotes: analysisResult.feasibilityNotes,
+            implementationOptions: analysisResult.implementationOptions as unknown as import('@prisma/client').Prisma.JsonArray,
+            clarifyingQuestions: (analysisResult.clarifyingQuestions ?? []) as unknown as import('@prisma/client').Prisma.JsonArray,
+          },
+        });
+
+        await this.prisma.activityLog.create({
+          data: {
+            organizationId,
+            issueId,
+            projectId: issue.projectId,
+            eventType: 'STATE_CHANGE',
+            friendlyMessage: `AI đã phân tích xong và đề xuất ${analysisResult.implementationOptions.length} phương án. Đang chờ bạn chọn cách thực hiện.`,
+            actorId: 'system',
+          },
+        });
+
+        // Stop here — planning will be triggered when user selects an option
+        return;
+      }
+
+      // ── Step 5 (no options): READ affected files from GitHub ─────────────
+      // If user already selected an option, use that option's affected files
+      const selectedOption = analysisResult.implementationOptions?.find(
+        o => o.id === (issue.selectedOptionId ?? ''),
+      );
+      const filesToAnalyze = selectedOption?.affectedFiles?.length
+        ? selectedOption.affectedFiles
+        : analysisResult.affectedFiles;
       // This is the key step that makes plans accurate: fetch actual file
       // content so the planning agent sees real code, not just file names.
       const fileContents: Record<string, string> = {};
@@ -145,7 +189,7 @@ export class AIAnalysisWorker extends WorkerHost {
           const token = await this.githubService.getDecryptedToken(organizationId);
           const octokit = new Octokit({ auth: token });
 
-          const filesToRead = analysisResult.affectedFiles.slice(0, MAX_FILES_TO_READ);
+          const filesToRead = filesToAnalyze.slice(0, MAX_FILES_TO_READ);
 
           await Promise.all(
             filesToRead.map(async (filePath) => {

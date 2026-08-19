@@ -187,6 +187,44 @@ export class IssuesService {
     });
   }
 
+  // ── Select Option ──────────────────────────────────────────────────────────
+
+  /**
+   * User picks an implementation option — triggers planning with that specific option.
+   */
+  async selectOption(
+    issueId: string,
+    organizationId: string,
+    selectedOptionId: string,
+  ): Promise<Issue> {
+    const issue = await this.findById(issueId, organizationId);
+
+    if (issue.status !== 'OPTIONS_READY') {
+      throw new BadRequestException('Issue không ở trạng thái chờ chọn phương án.');
+    }
+
+    // Save the selection and transition to ANALYZING (re-run planning phase)
+    const updated = await this.prisma.issue.update({
+      where: { id: issueId },
+      data: {
+        selectedOptionId,
+        status: IssueStatus.ANALYZING,
+      },
+    });
+
+    // Enqueue planning-only job (analysis is already done)
+    this.queueService
+      .enqueueAIAnalysis({
+        issueId,
+        projectId: issue.projectId,
+        organizationId,
+        retryCount: 0,
+      })
+      .catch(() => {});
+
+    return updated;
+  }
+
   // ── Soft Delete ────────────────────────────────────────────────────────────
 
   /**

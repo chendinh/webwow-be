@@ -158,4 +158,16 @@ export class IssuesController {
   ): Promise<void> {
     await this.issuesService.softDelete(issueId, organizationId);
   }
+
+  // ── POST /api/projects/:projectId/issues/:issueId/select-option ───────────
+
+  @Post(':issueId/select-option')
+  @ApiOperation({ summary: 'User chọn phương án triển khai' })
+  async selectOption(
+    @Param('issueId') issueId: string,
+    @Query('organizationId') organizationId: string,
+    @Body() body: { optionId: string },
+  ): Promise<Issue> {
+    return this.issuesService.selectOption(issueId, organizationId, body.optionId);
+  }
 }

@@ -377,10 +377,11 @@ export class AICodingWorker extends WorkerHost {
           checksPass = true;
         } else {
           const currentErrors = this.extractErrorLines(testResult.output);
-          const newErrors = currentErrors.filter(e => !baselineErrors.some(b => b === e || testResult.output.includes(b)));
+          const newErrors = this.findNewErrors(baselineErrors, currentErrors);
           checksPass = newErrors.length === 0;
           if (!checksPass) {
-            lastTestOutput = `NEW ERRORS (not in baseline):\n${newErrors.join('\n')}\n\nFULL OUTPUT:\n${testResult.output}`;
+            lastTestOutput = `NEW ERRORS (not in baseline):\n${newErrors.join('\n')}\n\nFULL BUILD OUTPUT:\n${testResult.output}`;
+            this.logger.warn(`Task ${taskId} attempt ${fixAttempts + 1}: ${newErrors.length} new error(s):\n${newErrors.slice(0, 5).join('\n')}`);
           }
         }
 
@@ -407,11 +408,12 @@ export class AICodingWorker extends WorkerHost {
             currentStep: `Sửa lỗi build lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
           });
 
-          // Read current content of all changed files, then ask AI to fix them
+          // Build the list of ALL changed files with their current content
           const filesForFix: Array<{ filePath: string; content: string }> = [];
+          const localWorkdirForFix = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
+            .localWorkdirs?.get(containerId);
+
           for (const fp of changedFiles) {
-            const localWorkdirForFix = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
-              .localWorkdirs?.get(containerId);
             let content = '';
             if (localWorkdirForFix) {
               const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', fp);
@@ -428,29 +430,77 @@ export class AICodingWorker extends WorkerHost {
             if (content) filesForFix.push({ filePath: fp, content });
           }
 
-          // Ask CodingAgent to fix files implicated in the build error
-          const fixes = await this.codingAgent.fixBuildErrors(
-            lastTestOutput,
-            filesForFix,
-            codeContext,
-            aiOutputLanguage,
+          // Get the repo file tree so AI knows what files exist
+          const repoFileTree: string[] = [];
+          if (localWorkdirForFix) {
+            const repoRoot = path.join(localWorkdirForFix, 'workspace', 'repo');
+            const walk = (dir: string, prefix = '') => {
+              if (!fs.existsSync(dir)) return;
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (['node_modules', '.git', '.next', 'dist', 'build'].includes(entry.name)) continue;
+                const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+                if (entry.isDirectory()) { walk(path.join(dir, entry.name), rel); }
+                else { repoFileTree.push(rel); }
+              }
+            };
+            walk(repoRoot);
+          }
+
+          // Extract just the NEW error signatures for targeted fixing
+          const currentErrors = this.extractErrorLines(testResult.output);
+          const newErrorsForFix = this.findNewErrors(baselineErrors, currentErrors);
+
+          // Log the actual error signatures for debugging
+          this.logger.warn(
+            `Fix attempt ${fixAttempts}: new errors:\n${newErrorsForFix.join('\n')}\n` +
+            `Full build section:\n${testResult.output.split('---').pop()?.substring(0, 1000) ?? ''}`,
           );
 
-          // Write fixed content back to sandbox
+          // Fallback: if signature parsing yielded nothing useful, use raw build output lines
+          const errorsToFix = newErrorsForFix.length > 0
+            ? newErrorsForFix
+            : testResult.output
+                .split('\n')
+                .filter(l => l.includes('Error') || l.includes('error') || l.includes('Failed'))
+                .slice(0, 20)
+                .map(l => l.trim())
+                .filter(l => l.length > 10);
+
+          // Ask CodingAgent to fix ALL errors holistically in one call
+          const fixes = await this.codingAgent.fixBuildErrors(
+            errorsToFix,
+            filesForFix,
+            repoFileTree,
+            codeContext,
+            aiOutputLanguage,
+            testResult.output, // pass full build output for maximum context
+          );
+
+          // Write fixed/created files back to sandbox
           for (const fix of fixes) {
-            const localWorkdirForFix = (this.sandbox as unknown as { localWorkdirs?: Map<string, string> })
-              .localWorkdirs?.get(containerId);
             if (localWorkdirForFix) {
               const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', fix.filePath);
+              // Ensure parent directory exists for CREATE operations
+              fs.mkdirSync(path.dirname(fullPath), { recursive: true });
               fs.writeFileSync(fullPath, fix.content, 'utf8');
             } else {
+              const dirPath = fix.filePath.includes('/')
+                ? fix.filePath.substring(0, fix.filePath.lastIndexOf('/'))
+                : '';
+              if (dirPath) {
+                await this.sandbox.exec(containerId, `mkdir -p /workspace/repo/${dirPath}`);
+              }
               const b64 = Buffer.from(fix.content).toString('base64');
               await this.sandbox.exec(
                 containerId,
                 `echo "${b64}" | base64 -d > /workspace/repo/${fix.filePath}`,
               );
             }
-            this.logger.log(`Applied AI fix to ${fix.filePath} (attempt ${fixAttempts})`);
+            // Track new files so they get committed
+            if (fix.type === 'CREATE' && !changedFiles.includes(fix.filePath)) {
+              changedFiles.push(fix.filePath);
+            }
+            this.logger.log(`Applied AI fix (${fix.type}) to ${fix.filePath} (attempt ${fixAttempts})`);
           }
 
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
@@ -622,19 +672,76 @@ AI-Task-Id: ${taskId}`;
   }
 
   /**
-   * Extracts normalised error lines from build output for baseline comparison.
-   * Strips line numbers and column numbers so minor formatting changes don't cause false positives.
+   * Extracts normalised error signatures from Next.js/TypeScript build output.
+   * Used to diff baseline vs post-AI errors — only NEW errors trigger fix loop.
+   *
+   * Next.js error format:
+   *   ./src/app/layout.tsx
+   *   Type error: Argument of type ... (line X)
+   *
+   * We extract "filePath::ErrorMessage" as the signature, ignoring line numbers.
    */
   private extractErrorLines(output: string): string[] {
-    return output
-      .split('\n')
-      .filter(l =>
-        (l.includes(' Error:') || l.includes(' error ') || l.includes('Type error:') || l.includes('Failed to compile'))
-        && !l.startsWith('[npm') && !l.startsWith('[build]')
-      )
-      // Normalise line:col references so "foo.tsx:12:3 Error:" == "foo.tsx:15:3 Error:"
-      .map(l => l.replace(/:\d+:\d+/g, ':').trim())
-      .filter(Boolean);
+    const lines = output.split('\n').map(l => l.trim()).filter(Boolean);
+    const signatures: string[] = [];
+    let currentFile = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // File reference line: starts with ./ or src/
+      if (line.startsWith('./') || line.match(/^[a-zA-Z].*\.(tsx?|jsx?|css|mjs)$/)) {
+        currentFile = line.replace(/^\.\//, '');
+        continue;
+      }
+
+      // Error line patterns from Next.js / tsc
+      const isError =
+        line.startsWith('Type error:') ||
+        line.startsWith('Error:') ||
+        line.includes(': error TS') ||
+        line.match(/^\d+:\d+\s+Error\s/) !== null ||
+        line.includes('Cannot find') ||
+        line.includes('is not assignable') ||
+        line.includes('does not exist') ||
+        line.includes('Module not found') ||
+        line.includes('You\'re importing a component');
+
+      if (isError) {
+        // Strip line:col numbers to normalise across minor edits
+        const normalised = line.replace(/\s*\(\d+,\d+\)/, '').replace(/:\s*\d+:\d+/, ':').trim();
+        const sig = currentFile ? `${currentFile}::${normalised}` : normalised;
+        // Skip empty/useless signatures like "foo.tsx::Error:" with nothing after
+        if (sig.length > 20 && !sig.endsWith('::Error:') && !sig.endsWith('::Error')) {
+          signatures.push(sig);
+        }
+      }
+    }
+
+    return [...new Set(signatures)]; // deduplicate
+  }
+
+  /**
+   * Compares current errors against baseline.
+   * Returns only errors that are genuinely NEW (not present in baseline).
+   */
+  private findNewErrors(baselineErrors: string[], currentErrors: string[]): string[] {
+    return currentErrors.filter(curr => {
+      // Check if this error is covered by baseline
+      return !baselineErrors.some(base => {
+        if (base === curr) return true;
+        // Fuzzy match: same file + same error type (ignoring exact message details)
+        const [baseFile, baseMsg] = base.split('::');
+        const [currFile, currMsg] = curr.split('::');
+        if (baseFile && currFile && baseFile === currFile) {
+          // Same file — check if error type is the same (first 40 chars)
+          const baseType = (baseMsg ?? '').substring(0, 40);
+          const currType = (currMsg ?? '').substring(0, 40);
+          return baseType === currType;
+        }
+        return false;
+      });
+    });
   }
 
   /**
@@ -727,8 +834,11 @@ AI-Task-Id: ${taskId}`;
         technicalDetail: {
           command: cmd,
           exitCode: result.exitCode,
-          stdout: result.stdout.substring(0, 1000),
-          stderr: result.stderr.substring(0, 1000),
+          // Log full output for build failures so we can debug
+          stdout: label === 'build' && result.exitCode !== 0
+            ? result.stdout.substring(0, 3000)
+            : result.stdout.substring(0, 1000),
+          stderr: result.stderr.substring(0, 500),
           durationMs: result.durationMs,
         },
         actorId: 'system',

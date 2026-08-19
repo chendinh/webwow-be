@@ -70,50 +70,78 @@ export class CodingAgent {
   }
 
   /**
-   * Given a build error output and the list of changed files with their current content,
-   * generate corrected versions for each file implicated in the error.
+   * Fix ALL build errors in one shot — analyzes all errors together with full context.
+   * This approach is far more effective than fixing file-by-file because:
+   * 1. AI sees ALL errors at once and can understand relationships (e.g. missing file causes import error)
+   * 2. AI has the repo file tree to know what files exist vs need to be created
+   * 3. AI can create NEW files (e.g. missing hooks/utils) instead of just patching imports
    */
   async fixBuildErrors(
-    buildErrorOutput: string,
-    changedFiles: Array<{ filePath: string; content: string }>,
+    newErrors: string[],
+    allChangedFiles: Array<{ filePath: string; content: string }>,
+    repoFileTree: string[],
     context: { framework: string; language: string },
     aiOutputLanguage = 'en',
+    fullBuildOutput?: string,
   ): Promise<CodeChange[]> {
-    const fixes: CodeChange[] = [];
+    if (newErrors.length === 0 && !fullBuildOutput) return [];
 
-    for (const file of changedFiles) {
-      // Only attempt fix for files that appear in the error output
-      const fileAppearsinError =
-        buildErrorOutput.includes(file.filePath) ||
-        buildErrorOutput.includes(file.filePath.split('/').pop() ?? '');
+    this.logger.log(
+      `Fixing ${newErrors.length} build error(s) holistically. ` +
+      `Context: ${allChangedFiles.length} files, ${repoFileTree.length} repo files`,
+    );
 
-      if (!fileAppearsinError) continue;
+    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
+    const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput);
 
-      this.logger.log(`Attempting AI fix for ${file.filePath}`);
+    try {
+      const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
+        maxTokens: 8000,
+        temperature: 0.05,
+      });
 
-      const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
-      const userPrompt = CodingPrompt.buildFix(buildErrorOutput, file.filePath, file.content, context);
+      this.logger.log(
+        `Fix response received: ${
+          typeof response.content === 'string'
+            ? response.content.length
+            : JSON.stringify(response.content).length
+        } chars, ${response.inputTokens + response.outputTokens} tokens`,
+      );
+
+      // Parse JSON array response
+      let parsed: Array<{ filePath: string; type: string; content: string }>;
+      const raw = typeof response.content === 'string'
+        ? response.content
+        : JSON.stringify(response.content);
+
+      // Strip any accidental markdown fences
+      const cleaned = raw.replace(/^```[a-z]*\n?/gm, '').replace(/```$/gm, '').trim();
 
       try {
-        const response = await this.aiProvider.call<string>(systemPrompt, userPrompt, {
-          maxTokens: 4096,
-          temperature: 0.05,
-        });
-
-        const content = typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content);
-
-        fixes.push({ filePath: file.filePath, content, type: 'MODIFY' });
-
-        this.logger.log(
-          `Fix generated for ${file.filePath}: ${response.inputTokens + response.outputTokens} tokens`,
-        );
-      } catch (err) {
-        this.logger.warn(`Failed to generate fix for ${file.filePath}: ${String(err)}`);
+        parsed = JSON.parse(cleaned) as Array<{ filePath: string; type: string; content: string }>;
+      } catch {
+        this.logger.warn('Fix response was not valid JSON — falling back to empty fix');
+        return [];
       }
-    }
 
-    return fixes;
+      if (!Array.isArray(parsed)) return [];
+
+      const fixes: CodeChange[] = parsed
+        .filter(item => item.filePath && item.content && (item.type === 'CREATE' || item.type === 'MODIFY'))
+        .map(item => ({
+          filePath: item.filePath.replace(/^\.\//, ''), // normalise path
+          content: item.content,
+          type: item.type as 'CREATE' | 'MODIFY',
+        }));
+
+      this.logger.log(
+        `Fix plan: ${fixes.map(f => `${f.type} ${f.filePath}`).join(', ')}`,
+      );
+
+      return fixes;
+    } catch (err) {
+      this.logger.warn(`Fix generation failed: ${String(err)}`);
+      return [];
+    }
   }
 }
