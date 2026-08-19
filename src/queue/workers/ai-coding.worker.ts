@@ -215,6 +215,12 @@ export class AICodingWorker extends WorkerHost {
         currentStep: 'Viết code',
       });
 
+      // Mark issue as IN_PROGRESS so FE shows the right state
+      await this.prisma.issue.update({
+        where: { id: issueId },
+        data: { status: 'IN_PROGRESS' },
+      });
+
       // ── Step 7: Apply code changes via CodingAgent ───────────────────────
       const changedFiles: string[] = [];
       let totalCodingTokens = 0;

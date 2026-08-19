@@ -86,6 +86,12 @@ export class PRCreationWorker extends WorkerHost {
         data: { completedAt: new Date() },
       });
 
+      // ── Step 5b: Update Issue status → COMPLETED ──────────────────────────
+      await this.prisma.issue.update({
+        where: { id: issueId },
+        data: { status: 'COMPLETED' },
+      });
+
       // ── Step 6: Log ActivityLog PR_CREATED ────────────────────────────────
       await this.prisma.activityLog.create({
         data: {
