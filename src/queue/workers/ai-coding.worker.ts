@@ -184,6 +184,12 @@ export class AICodingWorker extends WorkerHost {
       const issueShortId = issue.id.substring(0, 8);
       branchName = `ai/${issueShortId}-${branchSlug}`;
 
+      // Clean up any stale git lock files left by pre-flight checks
+      await this.sandbox.exec(
+        containerId,
+        `find /workspace/repo/.git -name '*.lock' -delete 2>/dev/null || true`,
+      );
+
       const checkoutResult = await this.sandbox.exec(
         containerId,
         `cd /workspace/repo && git checkout -b ${branchName}`,
