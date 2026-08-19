@@ -10,6 +10,7 @@ import {
   CompatibilityScorerService,
   AnalysisInput,
 } from '../../modules/projects/compatibility-scorer.service';
+import { RulebookService } from '../../ai/knowledge/rulebook.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { ProjectAnalysisJobData } from '../queue.types';
 
@@ -91,6 +92,7 @@ export class ProjectAnalysisWorker extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly githubService: GithubService,
     private readonly compatibilityScorer: CompatibilityScorerService,
+    private readonly rulebookService: RulebookService,
   ) {
     super();
   }
@@ -332,6 +334,14 @@ export class ProjectAnalysisWorker extends WorkerHost {
         `Compatibility score for project ${projectId}: ${score}/100 (${tier})`,
       );
 
+      // ── Step 7b: Build and save rulebook ─────────────────────────────────
+      const rulebook = this.rulebookService.compose({
+        frameworks,
+        databases,
+        dependencies: Object.keys(allDeps),
+        primaryLanguage,
+      });
+
       // ── Step 8: Persist ProjectAnalysis ───────────────────────────────────
       const analysisData = {
         organizationId,
@@ -353,6 +363,7 @@ export class ProjectAnalysisWorker extends WorkerHost {
             ? (buildScripts as unknown as Prisma.JsonObject)
             : Prisma.JsonNull,
         knownIssues: Prisma.JsonNull,
+        rulebook: rulebook as unknown as Prisma.JsonObject,
         analyzedAt: new Date(),
       };
 

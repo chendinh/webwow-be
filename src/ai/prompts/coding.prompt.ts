@@ -12,14 +12,54 @@ function getLanguageName(code: string): string {
   return map[code] ?? 'English';
 }
 
+// ─── Framework-specific coding rules ──────────────────────────────────────────
+// These are injected into the system prompt based on detected framework.
+// They encode non-obvious rules that AI commonly gets wrong.
+
+const FRAMEWORK_RULES: Record<string, string> = {
+  'next.js': `
+NEXT.JS APP ROUTER RULES (strictly enforced — violations cause build failures):
+1. SERVER COMPONENTS (default): Can export "metadata", can use async/await, CANNOT use hooks (useState, useEffect, etc.), CANNOT be marked "use client"
+2. CLIENT COMPONENTS: Must have "use client" at the very top, CAN use hooks, CANNOT export "metadata" or "generateStaticParams"
+3. CRITICAL: A file with "export const metadata" MUST NOT have "use client" — these are mutually exclusive
+4. layout.tsx that needs both metadata AND interactivity: Keep layout.tsx as Server Component, extract interactive parts into a separate Client Component (e.g. ThemeProvider.tsx) and import it
+5. When adding theme/state to layout.tsx: Create a wrapper Client Component, do NOT add "use client" to layout.tsx itself
+6. Hooks (useState, useContext, useEffect) belong in files marked "use client" only
+7. "use client" must be the FIRST line of the file (before any imports)`,
+
+  'react': `
+REACT RULES:
+1. Hooks must be called inside function component bodies only
+2. Custom hooks must start with "use"
+3. useEffect cleanup: return a cleanup function for subscriptions/timers`,
+
+  'nestjs': `
+NESTJS RULES:
+1. Services must be decorated with @Injectable()
+2. Controllers must be decorated with @Controller()
+3. All dependencies injected via constructor, never instantiated manually
+4. Use ConfigService for env vars, never process.env directly in services`,
+};
+
+function getFrameworkRules(framework: string): string {
+  const key = Object.keys(FRAMEWORK_RULES).find(k =>
+    framework.toLowerCase().includes(k.toLowerCase())
+  );
+  return key ? FRAMEWORK_RULES[key] : '';
+}
+
 export class CodingPrompt {
-  static buildSystem(language = 'en'): string {
+  static buildSystem(language = 'en', framework = '', rulebookRules = ''): string {
     const langInstruction =
       language !== 'en'
         ? `\n\nIMPORTANT: Write code comments in ${getLanguageName(language)} when adding new comments.`
         : '';
 
-    return `You are a senior software engineer implementing code changes.${langInstruction}
+    // Prefer rulebook (from project analysis) over generic framework rules
+    const rules = rulebookRules || getFrameworkRules(framework);
+    const rulesSection = rules ? `\n${rules}` : '';
+
+    return `You are a senior software engineer implementing code changes.${langInstruction}${rulesSection}
 
 Your job is to implement a specific file change from an approved implementation plan.
 
@@ -79,6 +119,14 @@ Return ONLY the complete new file content as plain text. No markdown, no code bl
       : '';
 
     return `You are fixing build errors in a ${context.framework} (${context.language}) project.
+
+CRITICAL FRAMEWORK RULES (apply these regardless of what the error says):
+- NEVER import from "next/document" (Html, Head, Main, NextScript) in App Router (src/app/ directory)
+- App Router layout.tsx uses plain HTML tags: <html lang="en"><body>{children}</body></html>
+- A file with "export const metadata" MUST NOT have "use client"
+- "use client" must be the FIRST line before any imports
+- Zustand persist requires: import { persist, createJSONStorage } from 'zustand/middleware'
+- Zustand hooks (useXxxStore) only in Client Components, never in Server Components
 
 BUILD ERRORS TO FIX:
 ${errorSection}${fullOutputSection}

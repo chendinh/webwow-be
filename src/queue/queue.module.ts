@@ -15,6 +15,7 @@ import { GithubModule } from '../modules/github/github.module';
 import { AiCoreModule } from '../ai/ai.module';
 import { PricingModule } from '../modules/pricing/pricing.module';
 import { AITasksModule } from '../modules/ai-tasks/ai-tasks.module';
+import { KnowledgeModule } from '../ai/knowledge/knowledge.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { AITasksModule } from '../modules/ai-tasks/ai-tasks.module';
     PricingModule,
     forwardRef(() => AITasksModule),
     ActivityModule,
+    KnowledgeModule,
   ],
   providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker, HealthCheckWorker],
   exports: [BullModule, QueueService],

@@ -11,6 +11,7 @@ import { AITasksService } from '../../modules/ai-tasks/ai-tasks.service';
 import { GithubService } from '../../modules/github/github.service';
 import { ActivityService } from '../../modules/activity/activity.service';
 import { CodingAgent } from '../../ai/agents/coding.agent';
+import { RulebookService } from '../../ai/knowledge/rulebook.service';
 import { ImplementationPlan } from '../../ai/schemas/implementation-plan.schema';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AICodingJobData } from '../queue.types';
@@ -31,6 +32,7 @@ export class AICodingWorker extends WorkerHost {
     private readonly activityService: ActivityService,
     private readonly queueService: QueueService,
     private readonly codingAgent: CodingAgent,
+    private readonly rulebookService: RulebookService,
   ) {
     super();
   }
@@ -234,6 +236,15 @@ export class AICodingWorker extends WorkerHost {
         language: projectAnalysis?.primaryLanguage ?? 'typescript',
       };
 
+      // Load rulebook for this project's tech stack
+      const rulebook = this.rulebookService.fromStored(projectAnalysis?.rulebook)
+        ?? this.rulebookService.fromFrameworks(projectAnalysis?.frameworks ?? []);
+      const rulebookRules = rulebook.codingRules;
+
+      this.logger.log(
+        `Using rulebook for ${rulebook.detectedTech.join(', ')} (${rulebookRules.length} chars of rules)`,
+      );
+
       // Load organization for AI output language preference
       const org = await this.prisma.organization.findUnique({
         where: { id: organizationId },
@@ -320,7 +331,7 @@ export class AICodingWorker extends WorkerHost {
         }
 
         // Call CodingAgent to generate actual code
-        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext, aiOutputLanguage);
+        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext, aiOutputLanguage, rulebookRules);
         totalCodingTokens += 100; // approximation — CodingAgent doesn't expose tokens yet
 
         // Ensure parent directory exists
@@ -480,6 +491,7 @@ export class AICodingWorker extends WorkerHost {
             codeContext,
             aiOutputLanguage,
             testResult.output, // pass full build output for maximum context
+            rulebookRules,     // pass tech stack rules to guide the fix
           );
 
           // Write fixed/created files back to sandbox

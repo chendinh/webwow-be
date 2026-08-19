@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GithubService } from '../../modules/github/github.service';
 import { AITasksService } from '../../modules/ai-tasks/ai-tasks.service';
+import { ProjectsService } from '../../modules/projects/projects.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { PRCreationJobData } from '../queue.types';
 
@@ -16,6 +17,7 @@ export class PRCreationWorker extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly githubService: GithubService,
     private readonly aiTasksService: AITasksService,
+    private readonly projectsService: ProjectsService,
   ) {
     super();
   }
@@ -104,6 +106,15 @@ export class PRCreationWorker extends WorkerHost {
           actorId: 'system',
         },
       });
+
+      // ── Step 7: Auto-merge into ai/main staging branch ────────────────────
+      try {
+        await this.projectsService.mergeIntoAiMain(projectId, organizationId, branchName, `feat: ${issue.title}`);
+        this.logger.log(`Merged ${branchName} into ai/main for project ${projectId}`);
+      } catch (mergeErr) {
+        // Non-fatal — the PR to main was already created; ai/main merge is best-effort
+        this.logger.warn(`Could not merge ${branchName} into ai/main: ${String(mergeErr)}`);
+      }
 
       this.logger.log(`PR creation completed for task ${taskId}`);
     } catch (err: unknown) {

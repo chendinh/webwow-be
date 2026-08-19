@@ -170,6 +170,17 @@ export class ProjectsController {
     await this.projectsService.triggerHealthCheck(projectId, organizationId);
   }
 
+  // ── POST /api/projects/:projectId/deploy-to-main ─────────────────────────────
+
+  @Post(':projectId/deploy-to-main')
+  @ApiOperation({ summary: 'Tạo PR merge ai/main → main để deploy' })
+  async deployToMain(
+    @Param('projectId') projectId: string,
+    @Query('organizationId') organizationId: string,
+  ) {
+    return this.projectsService.deployToMain(projectId, organizationId);
+  }
+
   // ── GET /api/projects/:projectId/health-check ─────────────────────────────────
 
   @Get(':projectId/health-check')

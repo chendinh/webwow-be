@@ -25,7 +25,9 @@ export class AnthropicProvider implements IAIProvider {
     userPrompt: string,
     options?: AICallOptions,
   ): Promise<AIResponse<T>> {
-    const model = options?.model ?? 'claude-3-5-sonnet-20241022';
+    const model = options?.model
+      ?? this.configService.get<string>('ai.defaultModel')
+      ?? 'claude-sonnet-4-5';
     const maxTokens = options?.maxTokens ?? 4096;
     const temperature = options?.temperature ?? 0.2;
 
@@ -45,7 +47,20 @@ export class AnthropicProvider implements IAIProvider {
           response.content[0]?.type === 'text'
             ? response.content[0].text
             : '{}';
-        const content = JSON.parse(rawContent) as T;
+
+        // Strip markdown code blocks that Claude often wraps responses in
+        const stripped = rawContent
+          .replace(/^```(?:json|typescript|tsx?|jsx?|css|html|ya?ml|sh|bash)?\s*/i, '')
+          .replace(/\s*```\s*$/, '')
+          .trim();
+
+        // Try JSON parse; if it fails, return as raw string (used by CodingAgent for file content)
+        let content: T;
+        try {
+          content = JSON.parse(stripped) as T;
+        } catch {
+          content = stripped as unknown as T;
+        }
 
         const inputTokens = response.usage.input_tokens;
         const outputTokens = response.usage.output_tokens;

@@ -7,6 +7,7 @@ import { Project, ProjectAnalysis, ProjectStatus } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { QueueService } from '../../queue/queue.service';
+import { GithubService } from '../github/github.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
@@ -28,6 +29,7 @@ export class ProjectsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    private readonly githubService: GithubService,
   ) {}
 
   // ── Create ────────────────────────────────────────────────────────────────────
@@ -163,6 +165,68 @@ export class ProjectsService {
       where: { id: projectId },
       data: { deletedAt: new Date() },
     });
+  }
+
+  // ── `ai/main` branch + Deploy ────────────────────────────────────────────────
+
+  /**
+   * Ensures ai/main staging branch exists, creating it from defaultBranch if needed.
+   */
+  async ensureAiMainBranch(projectId: string, organizationId: string): Promise<string> {
+    const project = await this.findById(projectId, organizationId);
+    const [owner, repo] = project.githubRepoFullName.split('/');
+    const aiMainBranch = 'ai/main';
+
+    // Try to create — if it already exists, the error is silently swallowed
+    try {
+      await this.githubService.createBranch(organizationId, owner, repo, aiMainBranch, project.defaultBranch);
+    } catch {
+      // Branch likely already exists — that's fine
+    }
+
+    return aiMainBranch;
+  }
+
+  /**
+   * Merges a completed AI PR branch into the ai/main staging branch via GitHub API.
+   */
+  async mergeIntoAiMain(projectId: string, organizationId: string, prBranchName: string, prTitle: string): Promise<void> {
+    const project = await this.findById(projectId, organizationId);
+    const [owner, repo] = project.githubRepoFullName.split('/');
+    const aiMainBranch = 'ai/main';
+
+    // Ensure ai/main exists
+    try {
+      await this.githubService.createBranch(organizationId, owner, repo, aiMainBranch, project.defaultBranch);
+    } catch { /* already exists */ }
+
+    // Create a merge PR from the AI task branch into ai/main
+    await this.githubService.createPullRequest(organizationId, owner, repo, {
+      title: `[staging] ${prTitle}`,
+      body: `Auto-merge from ${prBranchName} into staging branch ai/main`,
+      head: prBranchName,
+      base: aiMainBranch,
+    });
+  }
+
+  /**
+   * Deploys ai/main → defaultBranch (main) by creating a merge PR.
+   */
+  async deployToMain(projectId: string, organizationId: string): Promise<{ prUrl: string; prNumber: number }> {
+    const project = await this.findById(projectId, organizationId);
+    const [owner, repo] = project.githubRepoFullName.split('/');
+
+    const { number, htmlUrl } = await this.githubService.createPullRequest(
+      organizationId, owner, repo,
+      {
+        title: `🚀 Deploy AI changes to ${project.defaultBranch}`,
+        body: `This PR merges all completed AI tasks from the \`ai/main\` staging branch into \`${project.defaultBranch}\`.\n\nReview the changes and merge when ready to deploy.`,
+        head: 'ai/main',
+        base: project.defaultBranch,
+      },
+    );
+
+    return { prUrl: htmlUrl, prNumber: number };
   }
 
   // ── Health Check ──────────────────────────────────────────────────────────────

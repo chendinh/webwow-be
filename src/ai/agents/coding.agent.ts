@@ -28,12 +28,13 @@ export class CodingAgent {
     existingContent: string | null,
     context: { framework: string; language: string },
     aiOutputLanguage = 'en',
+    rulebookRules = '',
   ): Promise<CodeChange> {
     if (step.type === 'DELETE') {
       return { filePath: step.filePath, content: '', type: 'DELETE' };
     }
 
-    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
+    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
     const userPrompt = CodingPrompt.buildUser(step, existingContent, context);
 
     this.logger.log(`Implementing ${step.type} for: ${step.filePath}`);
@@ -83,6 +84,7 @@ export class CodingAgent {
     context: { framework: string; language: string },
     aiOutputLanguage = 'en',
     fullBuildOutput?: string,
+    rulebookRules = '',
   ): Promise<CodeChange[]> {
     if (newErrors.length === 0 && !fullBuildOutput) return [];
 
@@ -91,7 +93,7 @@ export class CodingAgent {
       `Context: ${allChangedFiles.length} files, ${repoFileTree.length} repo files`,
     );
 
-    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
+    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
     const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput);
 
     try {

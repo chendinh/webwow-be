@@ -261,6 +261,9 @@ model ProjectAnalysis {
   buildScripts       Json?             // {test, build, lint, format}
   knownIssues        Json?
 
+  // AI Knowledge Base — composed from detected tech stack
+  rulebook           Json?             // Rulebook {codingRules, analysisRules, detectedTech}
+
   // Baseline cost tracking — NEVER expose to customer
   baselineTokens     Int               @default(0)  // tokens used during project analysis
   baselineCostUsd    Float             @default(0)  // internal USD cost of project analysis
