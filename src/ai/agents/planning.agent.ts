@@ -26,8 +26,9 @@ export class PlanningAgent {
       type: string;
     },
     analysisResult: AnalysisResult,
+    language = 'en',
   ): Promise<PlanningAgentResult> {
-    const systemPrompt = PlanningPrompt.buildSystem();
+    const systemPrompt = PlanningPrompt.buildSystem(language);
     const userPrompt = PlanningPrompt.buildUser(issue, analysisResult);
 
     this.logger.log(`Creating implementation plan for: ${issue.title}`);

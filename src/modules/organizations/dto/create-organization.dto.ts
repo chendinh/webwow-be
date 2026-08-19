@@ -28,4 +28,13 @@ export class CreateOrganizationDto {
   @IsString()
   @IsOptional()
   logoUrl?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'en',
+    description: 'Language code for AI output: "en" | "vi" | "zh" | "ja" | "ko" | "fr" | "de" | "es" | "pt"',
+  })
+  @IsString()
+  @IsOptional()
+  aiOutputLanguage?: string;
 }

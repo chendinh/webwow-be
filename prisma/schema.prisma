@@ -143,14 +143,15 @@ model RefreshToken {
 }
 
 model Organization {
-  id          String               @id @default(uuid())
-  name        String
-  slug        String               @unique
-  logoUrl     String?
-  usageCap    Float                @default(500) // monthly USD cap
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
-  deletedAt   DateTime?
+  id                String               @id @default(uuid())
+  name              String
+  slug              String               @unique
+  logoUrl           String?
+  usageCap          Float                @default(500) // monthly USD cap
+  aiOutputLanguage  String               @default("en") // "en" | "vi" | "zh" | "ja" | "ko" | "fr" | "de" | "es" | "pt"
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  deletedAt         DateTime?
 
   members     OrganizationMember[]
   projects    Project[]

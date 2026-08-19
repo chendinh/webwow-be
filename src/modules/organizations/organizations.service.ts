@@ -186,6 +186,7 @@ export class OrganizationsService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.slug !== undefined && { slug: dto.slug }),
         ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl }),
+        ...(dto.aiOutputLanguage !== undefined && { aiOutputLanguage: dto.aiOutputLanguage }),
       },
     });
   }

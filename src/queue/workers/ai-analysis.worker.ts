@@ -43,6 +43,13 @@ export class AIAnalysisWorker extends WorkerHost {
         where: { projectId: issue.projectId },
       });
 
+      // Load organization for AI output language preference
+      const org = await this.prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { aiOutputLanguage: true },
+      });
+      const language = org?.aiOutputLanguage ?? 'en';
+
       // ── Step 2: Build ProjectContext for AI agents ──────────────────────
       // Handle the case where projectAnalysis is null (no analysis yet) — use empty context
       const projectContext = {
@@ -63,6 +70,7 @@ export class AIAnalysisWorker extends WorkerHost {
             priority: issue.priority,
           },
           projectContext,
+          language,
         );
 
       this.logger.log(
@@ -93,6 +101,7 @@ export class AIAnalysisWorker extends WorkerHost {
             type: issue.type,
           },
           analysisResult,
+          language,
         );
 
       this.logger.log(

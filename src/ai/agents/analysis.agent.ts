@@ -32,8 +32,9 @@ export class AnalysisAgent {
       mainDependencies: unknown[];
       buildScripts: unknown | null;
     },
+    language = 'en',
   ): Promise<AnalysisAgentResult> {
-    const systemPrompt = IssueAnalysisPrompt.buildSystem();
+    const systemPrompt = IssueAnalysisPrompt.buildSystem(language);
     const userPrompt = IssueAnalysisPrompt.buildUser(issue, projectContext);
 
     this.logger.log(`Starting analysis for issue: ${issue.title}`);

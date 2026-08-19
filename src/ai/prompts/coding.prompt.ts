@@ -1,6 +1,25 @@
+function getLanguageName(code: string): string {
+  const map: Record<string, string> = {
+    vi: 'Vietnamese',
+    zh: 'Chinese (Simplified)',
+    ja: 'Japanese',
+    ko: 'Korean',
+    fr: 'French',
+    de: 'German',
+    es: 'Spanish',
+    pt: 'Portuguese',
+  };
+  return map[code] ?? 'English';
+}
+
 export class CodingPrompt {
-  static buildSystem(): string {
-    return `You are a senior software engineer implementing code changes.
+  static buildSystem(language = 'en'): string {
+    const langInstruction =
+      language !== 'en'
+        ? `\n\nIMPORTANT: Write code comments in ${getLanguageName(language)} when adding new comments.`
+        : '';
+
+    return `You are a senior software engineer implementing code changes.${langInstruction}
 
 Your job is to implement a specific file change from an approved implementation plan.
 

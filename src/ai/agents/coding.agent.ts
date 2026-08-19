@@ -27,12 +27,13 @@ export class CodingAgent {
     step: ImplementationStep,
     existingContent: string | null,
     context: { framework: string; language: string },
+    aiOutputLanguage = 'en',
   ): Promise<CodeChange> {
     if (step.type === 'DELETE') {
       return { filePath: step.filePath, content: '', type: 'DELETE' };
     }
 
-    const systemPrompt = CodingPrompt.buildSystem();
+    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage);
     const userPrompt = CodingPrompt.buildUser(step, existingContent, context);
 
     this.logger.log(`Implementing ${step.type} for: ${step.filePath}`);

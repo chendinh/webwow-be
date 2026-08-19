@@ -249,6 +249,13 @@ export class AICodingWorker extends WorkerHost {
         language: projectAnalysis?.primaryLanguage ?? 'typescript',
       };
 
+      // Load organization for AI output language preference
+      const org = await this.prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { aiOutputLanguage: true },
+      });
+      const aiOutputLanguage = org?.aiOutputLanguage ?? 'en';
+
       for (const step of plan.steps) {
         this.logger.debug(`Applying step ${step.order}: ${step.type} ${step.filePath}`);
 
@@ -287,7 +294,7 @@ export class AICodingWorker extends WorkerHost {
         }
 
         // Call CodingAgent to generate actual code
-        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext);
+        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext, aiOutputLanguage);
         totalCodingTokens += 100; // approximation — CodingAgent doesn't expose tokens yet
 
         // Ensure parent directory exists

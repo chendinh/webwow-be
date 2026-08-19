@@ -1,6 +1,25 @@
+function getLanguageName(code: string): string {
+  const map: Record<string, string> = {
+    vi: 'Vietnamese',
+    zh: 'Chinese (Simplified)',
+    ja: 'Japanese',
+    ko: 'Korean',
+    fr: 'French',
+    de: 'German',
+    es: 'Spanish',
+    pt: 'Portuguese',
+  };
+  return map[code] ?? 'English';
+}
+
 export class PlanningPrompt {
-  static buildSystem(): string {
-    return `You are a senior software architect creating a detailed implementation plan.
+  static buildSystem(language = 'en'): string {
+    const langInstruction =
+      language !== 'en'
+        ? `\n\nIMPORTANT: Write all descriptive text fields (summary, step descriptions, testsToWrite descriptions, rollbackStrategy) in ${getLanguageName(language)}. Keep file paths, code snippets, and technical identifiers in English.`
+        : '';
+
+    return `You are a senior software architect creating a detailed implementation plan.${langInstruction}
 
 Your job is to create a precise, ordered list of code changes to implement the analyzed issue.
 

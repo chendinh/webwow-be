@@ -1,6 +1,25 @@
+function getLanguageName(code: string): string {
+  const map: Record<string, string> = {
+    vi: 'Vietnamese',
+    zh: 'Chinese (Simplified)',
+    ja: 'Japanese',
+    ko: 'Korean',
+    fr: 'French',
+    de: 'German',
+    es: 'Spanish',
+    pt: 'Portuguese',
+  };
+  return map[code] ?? 'English';
+}
+
 export class IssueAnalysisPrompt {
-  static buildSystem(): string {
-    return `You are a senior software engineer analyzing a customer issue request for an existing codebase.
+  static buildSystem(language = 'en'): string {
+    const langInstruction =
+      language !== 'en'
+        ? `\n\nIMPORTANT: Write all text fields (aiDiagnosis, feasibilityNotes) in ${getLanguageName(language)}. Keep technical terms (file paths, function names, code) in English.`
+        : '';
+
+    return `You are a senior software engineer analyzing a customer issue request for an existing codebase.${langInstruction}
 
 Your job is to:
 1. Understand the customer's request (written in natural language, possibly Vietnamese)
