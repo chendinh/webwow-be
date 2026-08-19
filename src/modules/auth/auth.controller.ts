@@ -17,6 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { IsNotEmpty, IsString } from 'class-validator';
 import { Request } from 'express';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -42,6 +43,12 @@ interface RequestWithRefreshUser extends Request {
 
 interface RequestWithGithubUser extends Request {
   user: GithubOauthUser;
+}
+
+class TokenLoginDto {
+  @IsString()
+  @IsNotEmpty()
+  token!: string;
 }
 
 // ─── Controller ──────────────────────────────────────────────────────────────
@@ -77,9 +84,19 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
-  // ── POST /api/auth/refresh ─────────────────────────────────────────────────
+  // ── POST /api/auth/token-login ────────────────────────────────────────────
 
-  @Post('refresh')
+  @Post('token-login')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({ summary: 'Đăng nhập bằng Personal Access Token' })
+  @ApiResponse({ status: 200, description: 'Đăng nhập thành công, trả về access + refresh token.' })
+  @ApiResponse({ status: 401, description: 'Token không hợp lệ hoặc đã hết hạn.' })
+  async tokenLogin(@Body() dto: TokenLoginDto): Promise<AuthTokensResponse> {
+    return this.authService.loginWithToken(dto.token);
+  }
+
+  // ── POST /api/auth/refresh ─────────────────────────────────────────────────  @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard('jwt-refresh'))
   @ApiOperation({ summary: 'Làm mới access token bằng refresh token' })

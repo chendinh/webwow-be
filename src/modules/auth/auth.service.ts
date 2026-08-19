@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { PersonalAccessTokenService } from './personal-access-token.service';
 
 // ─── Response interface ──────────────────────────────────────────────────────
 
@@ -68,6 +69,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     @Optional() private readonly notificationsService?: INotificationsService,
+    @Optional() private readonly patService?: PersonalAccessTokenService,
   ) {}
 
   // ── Register ────────────────────────────────────────────────────────────────
@@ -265,6 +267,32 @@ export class AuthService {
         resetPasswordToken: null,
         resetPasswordExpiry: null,
       },
+    });
+  }
+
+  // ── Login with PAT ────────────────────────────────────────────────────────────
+
+  async loginWithToken(rawToken: string): Promise<AuthTokensResponse> {
+    if (!this.patService) {
+      throw new UnauthorizedException('Token authentication is not available');
+    }
+
+    const { userId } = await this.patService.validate(rawToken);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, name: true, emailVerified: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return this.generateTokenPair(user.id, user.email, {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      emailVerified: user.emailVerified,
     });
   }
 

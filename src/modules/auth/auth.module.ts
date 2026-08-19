@@ -8,6 +8,8 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { GithubOauthStrategy } from './strategies/github-oauth.strategy';
+import { PersonalAccessTokenService } from './personal-access-token.service';
+import { PATController } from './pat.controller';
 
 @Module({
   imports: [
@@ -24,13 +26,14 @@ import { GithubOauthStrategy } from './strategies/github-oauth.strategy';
     }),
     PrismaModule,
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, PATController],
   providers: [
     AuthService,
+    PersonalAccessTokenService,
     JwtStrategy,
     JwtRefreshStrategy,
     GithubOauthStrategy,
   ],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService, JwtModule, PersonalAccessTokenService],
 })
 export class AuthModule {}
