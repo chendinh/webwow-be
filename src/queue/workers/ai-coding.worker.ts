@@ -494,20 +494,34 @@ export class AICodingWorker extends WorkerHost {
             if (content) filesForFix.push({ filePath: fp, content });
           }
 
-          // Get the repo file tree so AI knows what files exist
+          // Get the repo file tree using git ls-files — automatically respects .gitignore
+          // This is far more reliable than hardcoding exclude lists
           const repoFileTree: string[] = [];
           if (localWorkdirForFix) {
             const repoRoot = path.join(localWorkdirForFix, 'workspace', 'repo');
-            const walk = (dir: string, prefix = '') => {
-              if (!fs.existsSync(dir)) return;
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                if (['node_modules', '.git', '.next', 'dist', 'build'].includes(entry.name)) continue;
-                const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-                if (entry.isDirectory()) { walk(path.join(dir, entry.name), rel); }
-                else { repoFileTree.push(rel); }
-              }
-            };
-            walk(repoRoot);
+            try {
+              const { execSync } = await import('child_process');
+              const lsOutput = execSync('git ls-files --cached --others --exclude-standard', {
+                cwd: repoRoot,
+                encoding: 'utf8',
+                timeout: 10_000,
+              });
+              repoFileTree.push(...lsOutput.split('\n').map(l => l.trim()).filter(Boolean));
+              this.logger.debug(`git ls-files: ${repoFileTree.length} tracked files`);
+            } catch (gitErr) {
+              // Fallback: manual walk if git fails (e.g. non-git repo in sandbox)
+              this.logger.warn(`git ls-files failed (${String(gitErr)}) — falling back to manual walk`);
+              const walk = (dir: string, prefix = '') => {
+                if (!fs.existsSync(dir)) return;
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                  if (['node_modules', '.git', '.next', 'dist', 'build'].includes(entry.name)) continue;
+                  const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+                  if (entry.isDirectory()) { walk(path.join(dir, entry.name), rel); }
+                  else { repoFileTree.push(rel); }
+                }
+              };
+              walk(repoRoot);
+            }
           }
 
           // Extract just the NEW error signatures for targeted fixing
@@ -607,7 +621,8 @@ export class AICodingWorker extends WorkerHost {
           }
 
           // ── FULL SOURCE SCAN: load all source files from key dirs ──────────────
-          // This gives AI complete visibility into the repo, not just changed files
+          // Use repoFileTree (from git ls-files) as the source of truth — already gitignore-aware.
+          // This avoids loading example-ui, generated files, and other noise.
           if (localWorkdirForFix) {
             const repoRoot = path.join(localWorkdirForFix, 'workspace', 'repo');
             const FULL_SCAN_DIRS = ['src', 'app', 'components', 'lib', 'hooks', 'providers', 'context', 'store', 'stores', 'utils', 'types'];
@@ -616,30 +631,23 @@ export class AICodingWorker extends WorkerHost {
 
             const fullScanFiles: Array<{ filePath: string; content: string }> = [];
 
-            const walkFull = (dir: string, prefix: string) => {
-              if (!fs.existsSync(dir)) return;
-              if (fullScanFiles.length >= MAX_TOTAL_FILES) return;
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                if (['node_modules', '.git', '.next', 'dist', 'build', '.cache', 'coverage', 'example-ui'].includes(entry.name)) continue;
-                const rel = path.join(prefix, entry.name).replace(/\\/g, '/');
-                const fullEntryPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  walkFull(fullEntryPath, rel);
-                } else if (/\.(tsx?|jsx?|css|json)$/.test(entry.name) && !filesForFix.some(f => f.filePath === rel)) {
-                  try {
-                    const stat = fs.statSync(fullEntryPath);
-                    if (stat.size <= MAX_FILE_SIZE) {
-                      const content = fs.readFileSync(fullEntryPath, 'utf8');
-                      if (content) fullScanFiles.push({ filePath: rel, content });
-                    }
-                  } catch { /* skip unreadable */ }
-                }
-              }
-            };
+            // Filter repoFileTree to only source files in relevant dirs
+            const candidateFiles = repoFileTree.filter(rel =>
+              /\.(tsx?|jsx?|css|json)$/.test(rel) &&
+              FULL_SCAN_DIRS.some(d => rel.startsWith(d + '/') || rel.startsWith(d + '\\')) &&
+              !filesForFix.some(f => f.filePath === rel),
+            );
 
-            for (const srcDir of FULL_SCAN_DIRS) {
-              walkFull(path.join(repoRoot, srcDir), srcDir);
+            for (const rel of candidateFiles) {
               if (fullScanFiles.length >= MAX_TOTAL_FILES) break;
+              try {
+                const fullEntryPath = path.join(repoRoot, rel);
+                const stat = fs.statSync(fullEntryPath);
+                if (stat.isFile() && stat.size <= MAX_FILE_SIZE) {
+                  const content = fs.readFileSync(fullEntryPath, 'utf8');
+                  if (content) fullScanFiles.push({ filePath: rel, content });
+                }
+              } catch { /* skip unreadable */ }
             }
 
             // Add to filesForFix — AI now has full visibility
@@ -649,8 +657,7 @@ export class AICodingWorker extends WorkerHost {
           }
 
           // Step 2: for runtime/static-gen/context errors, scan src/ for files that use
-          // context hooks. The compiled chunk stack trace is useless; greping source is reliable.
-          // Also scan generated files (changedFiles) for Html imports and missing "use client".
+          // context hooks. Use repoFileTree (gitignore-aware) instead of manual walk.
           if (
             localWorkdirForFix &&
             (diagnosis.errorType === 'runtime' ||
@@ -665,8 +672,6 @@ export class AICodingWorker extends WorkerHost {
             const contextHookPattern = /use[A-Z]\w*(Theme|Context|Store|Mode|Dark|Light)/;
             const htmlDocImportPattern = /from ['"]next\/document['"]/;
 
-            // Grep all generated + adjacent files for violations and log them explicitly
-            // so the diagnosis prompt has concrete evidence to work with
             const violations: string[] = [];
 
             const scanFile = (rel: string, fullEntryPath: string) => {
@@ -691,22 +696,14 @@ export class AICodingWorker extends WorkerHost {
               } catch { /* skip unreadable files */ }
             };
 
-            const walkAndScan = (dir: string, prefix: string) => {
-              if (!fs.existsSync(dir)) return;
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                if (['node_modules', '.git', '.next', 'dist', 'build', 'example-ui', '__tests__', '__mocks__'].includes(entry.name)) continue;
-                const rel = path.join(prefix, entry.name).replace(/\\/g, '/');
-                const fullEntryPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  walkAndScan(fullEntryPath, rel);
-                } else {
-                  scanFile(rel, fullEntryPath);
-                }
-              }
-            };
+            // Use gitignore-aware repoFileTree — filters out example-ui, dist, etc. automatically
+            const candidateSourceFiles = repoFileTree.filter(rel =>
+              /\.(tsx?|jsx?)$/.test(rel) &&
+              srcDirs.some(d => rel.startsWith(d + '/') || rel.startsWith(d + '\\')),
+            );
 
-            for (const srcDir of srcDirs) {
-              walkAndScan(path.join(repoRoot, srcDir), srcDir);
+            for (const rel of candidateSourceFiles) {
+              scanFile(rel, path.join(repoRoot, rel));
             }
 
             if (violations.length > 0) {
