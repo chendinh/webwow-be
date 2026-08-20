@@ -4,6 +4,7 @@ export const KNOWLEDGE_BRANCH = 'ai/architecture';
 export const AI_MANIFEST_PATH = 'AI_MANIFEST.json';
 
 export const KNOWLEDGE_DOCUMENTS = [
+  'OVERVIEW.md',
   'PROJECT.md',
   'ARCHITECTURE.md',
   'MODULES.md',

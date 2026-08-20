@@ -589,6 +589,9 @@ export class KnowledgeAnalysisWorker extends WorkerHost {
     repoData: RepoAnalysisData,
   ): { system: string; user: string } {
     switch (docName) {
+      case 'OVERVIEW.md':
+        return KnowledgePrompt.buildOverviewMd(repoData);
+
       case 'PROJECT.md':
         return KnowledgePrompt.buildProjectMd(repoData);
 

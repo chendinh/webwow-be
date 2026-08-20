@@ -39,6 +39,45 @@ CRITICAL RULES:
 
 export class KnowledgePrompt {
   /**
+   * OVERVIEW.md — high-level product summary, user journey, key concepts.
+   * This is the "executive brief" that gives AI the full picture before touching code.
+   */
+  static buildOverviewMd(data: RepoAnalysisData): { system: string; user: string } {
+    const system = buildSystem('OVERVIEW.md');
+    const user = `Generate OVERVIEW.md for the following project. This document is the most important context document — it must give an AI coding assistant a complete mental model of the product BEFORE it reads any code.
+
+Project name: ${data.projectName}
+Primary language: ${data.primaryLanguage}
+Frameworks: ${data.frameworks.join(', ') || 'none detected'}
+Databases: ${data.databases.join(', ') || 'none detected'}
+Package manager: ${data.packageManager}
+Has Dockerfile: ${data.hasDockerfile}
+Has CI workflow: ${data.hasCiWorkflow}
+
+package.json (full):
+${JSON.stringify(data.packageJson ?? {}, null, 2).slice(0, 3000)}
+
+${data.readmeSnippet ? `README (full excerpt):\n${data.readmeSnippet}` : ''}
+
+File tree:
+${data.fileTree.slice(0, 120).join('\n')}
+
+REQUIRED SECTIONS (in this order):
+1. # OVERVIEW
+2. ## Product Summary — What does this product do? Who are the users? What problem does it solve? (4–8 sentences, product-level thinking)
+3. ## Core User Journeys — Top 3–5 flows a user goes through (e.g., sign up → connect repo → create issue → AI codes → PR created). Use numbered steps.
+4. ## Key Domain Concepts — Glossary of 8–15 domain terms specific to this project (e.g. "Issue", "AITask", "KnowledgeBranch"). One sentence each.
+5. ## System Boundaries — What this system does vs does NOT do. External services it integrates with (GitHub, payment provider, etc.).
+6. ## Data Flow — How data moves through the system at a high level (request → worker → AI → GitHub → PR). A short narrative or numbered sequence.
+7. ## Critical Invariants — 5–10 rules that must NEVER be violated (e.g., "never commit to main directly", "always validate org ownership before DB writes"). These are constraints an AI must respect when writing code.
+8. ## Known Limitations & Technical Debt — Current known issues, shortcuts taken, or areas that need improvement. Honest assessment.
+
+Write from the perspective of a senior engineer onboarding a new AI teammate. Be specific, not generic.`;
+
+    return { system, user };
+  }
+
+  /**
    * PROJECT.md — project purpose, tech stack, entry points.
    * Required sections: ## Overview, ## Technology Stack, ## Entry Points
    * Validates: Requirements 12.1
@@ -52,23 +91,28 @@ Default branch: ${data.defaultBranch}
 Primary language: ${data.primaryLanguage}
 Frameworks: ${data.frameworks.join(', ') || 'none detected'}
 Databases: ${data.databases.join(', ') || 'none detected'}
+Build tools: ${data.buildTools.join(', ') || 'none'}
 Package manager: ${data.packageManager}
 Has Dockerfile: ${data.hasDockerfile}
 Has CI workflow: ${data.hasCiWorkflow}
 
 package.json (excerpt):
-${JSON.stringify(data.packageJson ?? {}, null, 2).slice(0, 2000)}
+${JSON.stringify(data.packageJson ?? {}, null, 2).slice(0, 2500)}
 
-${data.readmeSnippet ? `README (excerpt):\n${data.readmeSnippet.slice(0, 1000)}` : ''}
+${data.readmeSnippet ? `README (excerpt):\n${data.readmeSnippet}` : ''}
 
 File tree (top-level):
-${data.fileTree.slice(0, 60).join('\n')}
+${data.fileTree.slice(0, 80).join('\n')}
 
 REQUIRED SECTIONS (in this order):
 1. # PROJECT
-2. ## Overview — 2–5 sentences describing the project purpose
-3. ## Technology Stack — primary language, frameworks, package manager, key dependencies
-4. ## Entry Points — root layout, main server file, or equivalent entry point files`;
+2. ## Overview — 3–6 sentences describing the project purpose, target users, and core value proposition
+3. ## Technology Stack — table or list of: primary language, runtime version (if detectable), frameworks, UI libraries, state management, ORM/database, job queues, auth mechanisms, external APIs
+4. ## Project Structure — brief description of top-level directories and their responsibilities
+5. ## Entry Points — root layout file, main server file, CLI entry, or equivalent. Include file path.
+6. ## Development Setup — how to install and run locally (infer from scripts in package.json)
+7. ## Environment Variables — list key env vars expected (infer from .env.example patterns or config files in the file tree)
+8. ## Build & Deploy — build command, output directory, deployment target (infer from Dockerfile/CI if present)`;
 
     return { system, user };
   }
@@ -89,15 +133,21 @@ Project: ${data.projectName}
 Primary language: ${data.primaryLanguage}
 Frameworks: ${data.frameworks.join(', ') || 'none'}
 Databases: ${data.databases.join(', ') || 'none'}
+Build tools: ${data.buildTools.join(', ') || 'none'}
 
-File tree (two levels deep):
-${fileTree.slice(0, 100).join('\n')}
+File tree (full, two levels deep):
+${fileTree.slice(0, 150).join('\n')}
 
 REQUIRED SECTIONS (in this order):
 1. # ARCHITECTURE
-2. ## Directory Structure — two-level tree of the project root
-3. ## Architectural Patterns — identified patterns (e.g., MVC, layered, modular monolith, microservices)
-4. ## Module Interactions — 1–3 sentence narrative per major module boundary`;
+2. ## Directory Structure — annotated two-level tree. For each top-level directory, add a one-line comment explaining its purpose.
+3. ## Architectural Patterns — identified patterns with explanation of how they are applied here (e.g., MVC, layered architecture, modular monolith, queue-driven workers, App Router vs Pages Router, Server vs Client Components). Be specific, not generic.
+4. ## Request Lifecycle — step-by-step flow of a typical HTTP request through the system (route → middleware → controller → service → DB → response)
+5. ## Background Job Architecture — how async jobs work (queue names, worker types, job data shape, retry strategy)
+6. ## Module Interactions — dependency graph narrative. Which modules depend on which. Avoid circular dependencies.
+7. ## State Management — how client and server state is managed (Zustand stores, React context, server-side sessions, etc.)
+8. ## Authentication & Authorization — how auth works end-to-end (token type, guard mechanism, org/project ownership checks)
+9. ## Error Handling Strategy — how errors propagate (exceptions, HTTP codes, worker failure handling)`;
 
     return { system, user };
   }

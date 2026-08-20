@@ -136,6 +136,8 @@ export class CodingAgent {
     fullBuildOutput?: string,
     rulebookRules = '',
     diagnosis?: { errorType: string; rootCause: string; affectedFiles: string[]; diagnosis: string },
+    attemptNumber?: number,
+    unchangedFiles?: string[],
   ): Promise<CodeChange[]> {
     if (newErrors.length === 0 && !fullBuildOutput) return [];
 
@@ -145,12 +147,20 @@ export class CodingAgent {
     );
 
     const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
-    const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput, diagnosis);
+    const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput, diagnosis, attemptNumber, unchangedFiles);
+
+    // Increase temperature on repeated failures so AI explores different solutions
+    // attempt 1→2: 0.05 (near-deterministic), attempt 3+: 0.3, attempt 5+: 0.5
+    const temperature = !attemptNumber || attemptNumber <= 2
+      ? 0.05
+      : attemptNumber <= 4 ? 0.3 : 0.5;
+
+    this.logger.log(`Fix attempt ${attemptNumber ?? 1}: temperature=${temperature}, unchangedFiles=${unchangedFiles?.length ?? 0}`);
 
     try {
       const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
         maxTokens: 8000,
-        temperature: 0.05,
+        temperature,
       });
 
       this.logger.log(

@@ -12,6 +12,7 @@ import { PlanningAgent } from '../../ai/agents/planning.agent';
 import { PricingService } from '../../modules/pricing/pricing.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AIAnalysisJobData } from '../queue.types';
+import { IssueStatus } from '@prisma/client';
 
 // Default divisor for spreading baseline cost across issues (MVP)
 const BASELINE_COST_ISSUE_DIVISOR = 10;
@@ -110,6 +111,57 @@ export class AIAnalysisWorker extends WorkerHost {
 
       // ── Step 2b: Read knowledge branch context ───────────────────────────
       const [owner, repo] = (issue.project?.githubRepoFullName ?? '/').split('/');
+
+      // CRITICAL: If knowledge branch doesn't exist, block task execution and
+      // require user to set up project architecture first.
+      const knowledgeStatus = await this.knowledgeReaderAgent.checkAvailability(
+        owner,
+        repo,
+        organizationId,
+      );
+
+      if (!knowledgeStatus.available) {
+        this.logger.warn(
+          `Knowledge branch not available for ${owner}/${repo} — blocking analysis. ` +
+          `User must run architecture analysis first.`,
+        );
+
+        // Update issue with blocked reason so FE can show correct state + banner
+        await this.prisma.issue.update({
+          where: { id: issueId },
+          data: {
+            status: IssueStatus.ANALYSIS_FAILED,
+            aiDiagnosis: JSON.stringify({
+              requiresArchitectureSetup: true,
+              message: 'Dự án chưa có kiến trúc AI. Vui lòng chạy "Phân tích kiến trúc" trước.',
+            }),
+          },
+        });
+
+        await this.prisma.activityLog.create({
+          data: {
+            organizationId,
+            issueId,
+            projectId: issue.projectId,
+            eventType: 'ERROR',
+            agentType: 'KnowledgeReaderAgent',
+            friendlyMessage:
+              'Dự án chưa có kiến trúc AI. Vui lòng chạy "Phân tích kiến trúc" trước khi thực hiện task này.',
+            technicalDetail: {
+              requiresArchitectureSetup: true,
+              missingBranch: 'ai/architecture',
+              projectId: issue.projectId,
+            },
+            actorId: 'system',
+          },
+        });
+
+        throw Object.assign(
+          new Error('REQUIRES_ARCHITECTURE_SETUP: Knowledge branch ai/architecture not found.'),
+          { requiresArchitectureSetup: true },
+        );
+      }
+
       const knowledgeContext = await this.knowledgeReaderAgent.readForAnalysisTask(
         owner,
         repo,

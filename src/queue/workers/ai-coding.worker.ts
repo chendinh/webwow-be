@@ -19,7 +19,7 @@ import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AICodingJobData } from '../queue.types';
 import { QueueService } from '../queue.service';
 
-const MAX_FIX_ATTEMPTS = 5;
+const MAX_FIX_ATTEMPTS = 100;
 
 // R19.4: Max 5 concurrent coding tasks enforced via concurrency option
 @Processor(QUEUES.AI_CODING, { concurrency: CONCURRENCY.AI_CODING })
@@ -62,13 +62,27 @@ export class AICodingWorker extends WorkerHost {
 
       const { issue, project } = task;
 
-      // Guard: if task is already in a terminal state (from a previous failed attempt),
-      // reset it to QUEUED so BullMQ retry can proceed
-      const terminalStates: AITaskStatus[] = [AITaskStatus.FAILED, AITaskStatus.CANCELLED, AITaskStatus.COMPLETED];
-      if (terminalStates.includes(task.status)) {
+      // Guard: reset task to QUEUED whenever BullMQ retries the job.
+      // This handles both terminal states (FAILED/CANCELLED) AND mid-flight states
+      // (TESTING, FIXING, CODING, etc.) that were left dirty by a previous crashed attempt.
+      const resetableStates: AITaskStatus[] = [
+        AITaskStatus.FAILED,
+        AITaskStatus.CANCELLED,
+        AITaskStatus.COMPLETED,
+        AITaskStatus.PREPARING,
+        AITaskStatus.CODING,
+        AITaskStatus.TESTING,
+        AITaskStatus.FIXING,
+        AITaskStatus.REVIEWING,
+        AITaskStatus.CREATING_PR,
+      ];
+      if (resetableStates.includes(task.status)) {
+        this.logger.warn(
+          `Task ${taskId} found in state ${task.status} at job start — resetting to QUEUED for retry.`,
+        );
         await this.prisma.aITask.update({
           where: { id: taskId },
-          data: { status: AITaskStatus.QUEUED, failureReason: null },
+          data: { status: AITaskStatus.QUEUED, failureReason: null, currentStep: null },
         });
       }
 
@@ -402,6 +416,8 @@ export class AICodingWorker extends WorkerHost {
       let lastTestOutput = '';
       let lastErrorSignature = '';
       let lastSameErrorCount = 0;
+      // Track files that AI generated identical content for — passed to next attempt's prompt
+      let lastUnchangedFiles: string[] = [];
 
       while (!checksPass && fixAttempts <= MAX_FIX_ATTEMPTS) {
         const testResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
@@ -509,12 +525,19 @@ export class AICodingWorker extends WorkerHost {
             : 0;
           lastSameErrorCount = sameErrorCount;
           lastErrorSignature = currentErrorSignature;
+
+          this.logger.log(
+            `[FIX-LOOP] attempt=${fixAttempts}/${MAX_FIX_ATTEMPTS} ` +
+            `errorSig="${currentErrorSignature.substring(0, 80)}" ` +
+            `sameErrCount=${sameErrorCount} ` +
+            `newErrCount=${newErrorsForFix.length}`,
+          );
+
           if (sameErrorCount >= 4) {
             throw new Error(
               `AI lặp lại lỗi cũ sau ${fixAttempts} lần sửa mà không có tiến triển. Lỗi: ${newErrorsForFix.slice(0, 2).map(e => e.substring(0, 120)).join('; ')}`,
             );
           }
-
           // Log the actual error signatures for debugging
           this.logger.warn(
             `Fix attempt ${fixAttempts}: new errors:\n${newErrorsForFix.join('\n')}\n` +
@@ -708,6 +731,8 @@ export class AICodingWorker extends WorkerHost {
             testResult.output,
             rulebookRules,
             diagnosis,
+            fixAttempts,
+            lastUnchangedFiles,
           );
 
           // Bug 1: Guard against AI returning no fixes — skip rebuild to avoid wasted attempt
@@ -724,12 +749,37 @@ export class AICodingWorker extends WorkerHost {
           }
 
           // Write fixed/created files back to sandbox
+          const writtenFiles: string[] = [];
+          const skippedUnchangedFiles: string[] = [];
+
           for (const fix of fixes) {
             if (localWorkdirForFix) {
               const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', fix.filePath);
               // Ensure parent directory exists for CREATE operations
               fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+
+              // Read old content for diff logging
+              const oldContent = fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf8') : null;
+              const oldHash = oldContent ? require('crypto').createHash('md5').update(oldContent).digest('hex').substring(0, 8) : 'N/A(new)';
+              const newHash = require('crypto').createHash('md5').update(fix.content).digest('hex').substring(0, 8);
+              const contentChanged = oldContent !== fix.content;
+
               fs.writeFileSync(fullPath, fix.content, 'utf8');
+
+              if (contentChanged) {
+                writtenFiles.push(fix.filePath);
+                this.logger.log(
+                  `[FIX-WRITE] attempt=${fixAttempts} type=${fix.type} file=${fix.filePath} ` +
+                  `hash=${oldHash}→${newHash} size=${fix.content.length}B ` +
+                  `preview="${fix.content.replace(/\s+/g, ' ').substring(0, 120)}..."`,
+                );
+              } else {
+                skippedUnchangedFiles.push(fix.filePath);
+                this.logger.warn(
+                  `[FIX-UNCHANGED] attempt=${fixAttempts} file=${fix.filePath} ` +
+                  `hash=${oldHash} — AI generated IDENTICAL content, file NOT changed!`,
+                );
+              }
             } else {
               const dirPath = fix.filePath.includes('/')
                 ? fix.filePath.substring(0, fix.filePath.lastIndexOf('/'))
@@ -742,6 +792,11 @@ export class AICodingWorker extends WorkerHost {
                 containerId,
                 `echo "${b64}" | base64 -d > /workspace/repo/${fix.filePath}`,
               );
+              writtenFiles.push(fix.filePath);
+              this.logger.log(
+                `[FIX-WRITE] attempt=${fixAttempts} type=${fix.type} file=${fix.filePath} ` +
+                `size=${fix.content.length}B (docker mode)`,
+              );
             }
             // Track new files so they get committed
             if (fix.type === 'CREATE' && !changedFiles.includes(fix.filePath)) {
@@ -750,8 +805,21 @@ export class AICodingWorker extends WorkerHost {
             this.logger.log(`Applied AI fix (${fix.type}) to ${fix.filePath} (attempt ${fixAttempts})`);
           }
 
-          // Bug 3: Log confirmation that files were written
-          this.logger.log(`Fix attempt ${fixAttempts}: wrote ${fixes.length} file(s): ${fixes.map(f => f.filePath).join(', ')}`);
+          // Detailed summary: how many files actually changed vs were identical
+          this.logger.log(
+            `Fix attempt ${fixAttempts}: wrote ${fixes.length} file(s): ${fixes.map(f => f.filePath).join(', ')}`,
+          );
+          if (writtenFiles.length > 0) {
+            this.logger.log(`[FIX-SUMMARY] attempt=${fixAttempts} CHANGED(${writtenFiles.length}): ${writtenFiles.join(', ')}`);
+          }
+          if (skippedUnchangedFiles.length > 0) {
+            this.logger.warn(
+              `[FIX-SUMMARY] attempt=${fixAttempts} UNCHANGED(${skippedUnchangedFiles.length}): ${skippedUnchangedFiles.join(', ')} ` +
+              `— AI is stuck producing same output! Consider escalating strategy.`,
+            );
+          }
+          // Persist for next attempt so AI knows which files it failed to change
+          lastUnchangedFiles = skippedUnchangedFiles;
 
           // Record this fix attempt for future learning (async, best-effort)
           void this.failureLearner.recordFailure({

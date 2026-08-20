@@ -150,6 +150,8 @@ Return ONLY a JSON object with this shape:
     context: { framework: string; language: string },
     fullBuildOutput?: string,
     diagnosis?: { errorType: string; rootCause: string; affectedFiles: string[]; diagnosis: string },
+    attemptNumber?: number,
+    unchangedFiles?: string[],
   ): string {
     const fileContentsSection = allChangedFiles
       .map(f => `=== ${f.filePath} ===\n${f.content}`)
@@ -177,7 +179,20 @@ Diagnosis: ${diagnosis.diagnosis}
 IMPORTANT: Base your fix on the diagnosis above. Only modify files identified in "affectedFiles" unless the diagnosis explicitly says other files need changes too.`
       : '';
 
-    return `You are fixing build errors in a ${context.framework} (${context.language}) project.
+    const attemptSection = (attemptNumber !== undefined && attemptNumber > 1)
+      ? `\n⚠️  THIS IS FIX ATTEMPT #${attemptNumber}. The previous ${attemptNumber - 1} attempt(s) failed.
+${unchangedFiles && unchangedFiles.length > 0
+  ? `CRITICAL: The following files were generated in a previous attempt but PRODUCED IDENTICAL OUTPUT — your previous fix for these files DID NOT resolve the build error:
+${unchangedFiles.map(f => `  - ${f}`).join('\n')}
+You MUST generate DIFFERENT content for these files. If you return the same content again, the build will fail again.
+THINK DIFFERENTLY: The files shown may look correct in isolation, but the error persists — that means your previous approach is fundamentally wrong. Try a completely different strategy:
+  - Look for OTHER files not yet modified that may be the real root cause
+  - Consider creating a new wrapper/bridge file instead of modifying the existing ones
+  - Re-examine ALL imports, re-exports, and provider wrapping in the component tree`
+  : 'Your previous fixes did not resolve the error. Try a completely different approach.'}`
+      : '';
+
+    return `You are fixing build errors in a ${context.framework} (${context.language}) project.${attemptSection}
 
 CRITICAL FRAMEWORK RULES (apply these regardless of what the error says):
 - NEVER import from "next/document" (Html, Head, Main, NextScript) in App Router (src/app/ directory)
