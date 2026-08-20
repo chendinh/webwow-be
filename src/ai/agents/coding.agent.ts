@@ -71,6 +71,52 @@ export class CodingAgent {
   }
 
   /**
+   * Phase 1 of the two-phase fix loop.
+   * Classifies the error, traces the stack, and identifies root-cause files
+   * WITHOUT touching any code. Returns a structured diagnosis to guide Phase 2.
+   */
+  async diagnoseBuildErrors(
+    newErrors: string[],
+    repoFileTree: string[],
+    context: { framework: string; language: string },
+    fullBuildOutput?: string,
+  ): Promise<{ errorType: string; rootCause: string; affectedFiles: string[]; diagnosis: string }> {
+    const systemPrompt = `You are a senior ${context.framework} (${context.language}) software engineer. Your only job is to diagnose build errors. Return valid JSON only.`;
+    const userPrompt = CodingPrompt.buildDiagnose(newErrors, repoFileTree, context, fullBuildOutput);
+
+    this.logger.log(`Diagnosing ${newErrors.length} error(s) — phase 1 of fix loop`);
+
+    try {
+      const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
+        maxTokens: 2048,
+        temperature: 0.0,
+      });
+
+      const raw = typeof response.content === 'string'
+        ? response.content
+        : JSON.stringify(response.content);
+
+      const cleaned = raw.replace(/^```[a-z]*\n?/gm, '').replace(/```$/gm, '').trim();
+      const parsed = JSON.parse(cleaned) as {
+        errorType: string;
+        rootCause: string;
+        affectedFiles: string[];
+        diagnosis: string;
+      };
+
+      this.logger.log(
+        `Diagnosis: type=${parsed.errorType}, rootCause="${parsed.rootCause}", ` +
+        `affectedFiles=[${parsed.affectedFiles.join(', ')}]`,
+      );
+
+      return parsed;
+    } catch (err) {
+      this.logger.warn(`Diagnosis phase failed (${String(err)}) — proceeding without diagnosis`);
+      return { errorType: 'other', rootCause: 'unknown', affectedFiles: [], diagnosis: '' };
+    }
+  }
+
+  /**
    * Fix ALL build errors in one shot — analyzes all errors together with full context.
    * This approach is far more effective than fixing file-by-file because:
    * 1. AI sees ALL errors at once and can understand relationships (e.g. missing file causes import error)
@@ -85,6 +131,7 @@ export class CodingAgent {
     aiOutputLanguage = 'en',
     fullBuildOutput?: string,
     rulebookRules = '',
+    diagnosis?: { errorType: string; rootCause: string; affectedFiles: string[]; diagnosis: string },
   ): Promise<CodeChange[]> {
     if (newErrors.length === 0 && !fullBuildOutput) return [];
 
@@ -94,7 +141,7 @@ export class CodingAgent {
     );
 
     const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
-    const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput);
+    const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput, diagnosis);
 
     try {
       const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
@@ -121,8 +168,8 @@ export class CodingAgent {
 
       try {
         parsed = JSON.parse(cleaned) as Array<{ filePath: string; type: string; content: string }>;
-      } catch {
-        this.logger.warn('Fix response was not valid JSON — falling back to empty fix');
+      } catch (parseErr) {
+        this.logger.warn(`Fix response JSON parse failed: ${String(parseErr)}\nRaw response (first 500 chars): ${cleaned.substring(0, 500)}`);
         return [];
       }
 

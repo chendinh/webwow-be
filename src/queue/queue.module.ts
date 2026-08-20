@@ -22,11 +22,20 @@ import { KnowledgeModule } from '../ai/knowledge/knowledge.module';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        connection: {
-          url: configService.get<string>('redis.url') ?? 'redis://localhost:6379',
-        },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('redis.url') ?? 'redis://localhost:6379';
+        const isTls = redisUrl.startsWith('rediss://');
+        return {
+          connection: {
+            url: redisUrl,
+            ...(isTls ? {
+              tls: {
+                rejectUnauthorized: false,
+              },
+            } : {}),
+          },
+        };
+      },
     }),
     BullModule.registerQueue(
       { name: QUEUES.PROJECT_ANALYSIS },

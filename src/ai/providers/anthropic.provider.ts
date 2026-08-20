@@ -54,12 +54,23 @@ export class AnthropicProvider implements IAIProvider {
           .replace(/\s*```\s*$/, '')
           .trim();
 
-        // Try JSON parse; if it fails, return as raw string (used by CodingAgent for file content)
+        // Try JSON parse; if it fails, attempt to extract a JSON object/array from
+        // the string (Claude sometimes prepends/appends prose around the JSON block).
+        // If extraction also fails, return as raw string (used by CodingAgent for file content).
         let content: T;
         try {
           content = JSON.parse(stripped) as T;
         } catch {
-          content = stripped as unknown as T;
+          const jsonMatch = stripped.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+          if (jsonMatch) {
+            try {
+              content = JSON.parse(jsonMatch[1]) as T;
+            } catch {
+              content = stripped as unknown as T;
+            }
+          } else {
+            content = stripped as unknown as T;
+          }
         }
 
         const inputTokens = response.usage.input_tokens;

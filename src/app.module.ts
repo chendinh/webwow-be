@@ -26,6 +26,7 @@ import { UsageModule } from './modules/usage/usage.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { AITasksModule } from './modules/ai-tasks/ai-tasks.module';
 import { SandboxModule } from './sandbox/sandbox.module';
+import { SystemHealthModule } from './modules/system-health/system-health.module';
 
 @Module({
   imports: [
@@ -112,6 +113,7 @@ import { SandboxModule } from './sandbox/sandbox.module';
     SandboxModule,
     AITasksModule,
     ApprovalsModule,
+    SystemHealthModule,
   ],
 })
 export class AppModule {}

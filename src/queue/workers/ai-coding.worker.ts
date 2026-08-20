@@ -12,6 +12,7 @@ import { GithubService } from '../../modules/github/github.service';
 import { ActivityService } from '../../modules/activity/activity.service';
 import { CodingAgent } from '../../ai/agents/coding.agent';
 import { RulebookService } from '../../ai/knowledge/rulebook.service';
+import { FailureLearnerService } from '../../ai/knowledge/failure-learner.service';
 import { ImplementationPlan } from '../../ai/schemas/implementation-plan.schema';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { AICodingJobData } from '../queue.types';
@@ -33,6 +34,7 @@ export class AICodingWorker extends WorkerHost {
     private readonly queueService: QueueService,
     private readonly codingAgent: CodingAgent,
     private readonly rulebookService: RulebookService,
+    private readonly failureLearner: FailureLearnerService,
   ) {
     super();
   }
@@ -384,6 +386,8 @@ export class AICodingWorker extends WorkerHost {
       let checksPass = false;
       let fixAttempts = 0;
       let lastTestOutput = '';
+      let lastErrorSignature = '';
+      let lastSameErrorCount = 0;
 
       while (!checksPass && fixAttempts <= MAX_FIX_ATTEMPTS) {
         const testResult = await this.runChecks(containerId, organizationId, projectId, issueId, taskId);
@@ -467,6 +471,23 @@ export class AICodingWorker extends WorkerHost {
           const currentErrors = this.extractErrorLines(testResult.output);
           const newErrorsForFix = this.findNewErrors(baselineErrors, currentErrors);
 
+          // If the same error signature repeats 3 times in a row, the AI is truly stuck.
+          // Strip stack paths (node_modules/...) to get a stable signature — otherwise
+          // the minified Next.js chunk path makes every attempt look identical.
+          // Allow up to 2 same-error retries before giving up (AI may try different strategies).
+          const normalizeForSig = (e: string) => e.replace(/\(.*?\)/g, '').replace(/at \S+/g, '').trim();
+          const currentErrorSignature = newErrorsForFix.slice(0, 3).map(normalizeForSig).join('|');
+          const sameErrorCount = (currentErrorSignature && currentErrorSignature === lastErrorSignature)
+            ? (lastSameErrorCount + 1)
+            : 0;
+          lastSameErrorCount = sameErrorCount;
+          lastErrorSignature = currentErrorSignature;
+          if (sameErrorCount >= 4) {
+            throw new Error(
+              `AI lặp lại lỗi cũ sau ${fixAttempts} lần sửa mà không có tiến triển. Lỗi: ${newErrorsForFix.slice(0, 2).map(e => e.substring(0, 120)).join('; ')}`,
+            );
+          }
+
           // Log the actual error signatures for debugging
           this.logger.warn(
             `Fix attempt ${fixAttempts}: new errors:\n${newErrorsForFix.join('\n')}\n` +
@@ -474,7 +495,7 @@ export class AICodingWorker extends WorkerHost {
           );
 
           // Fallback: if signature parsing yielded nothing useful, use raw build output lines
-          const errorsToFix = newErrorsForFix.length > 0
+          let errorsToFix = newErrorsForFix.length > 0
             ? newErrorsForFix
             : testResult.output
                 .split('\n')
@@ -483,6 +504,173 @@ export class AICodingWorker extends WorkerHost {
                 .map(l => l.trim())
                 .filter(l => l.length > 10);
 
+          // ── Phase 1: Diagnose — classify error, trace stack, find root-cause files ──
+          const diagnosis = await this.codingAgent.diagnoseBuildErrors(
+            newErrorsForFix.length > 0 ? newErrorsForFix : errorsToFix,
+            repoFileTree,
+            codeContext,
+            testResult.output,
+          );
+
+          this.logger.log(
+            `Fix attempt ${fixAttempts} diagnosis: type=${diagnosis.errorType}, ` +
+            `rootCause="${diagnosis.rootCause}", ` +
+            `affectedFiles=[${diagnosis.affectedFiles.join(', ')}]`,
+          );
+
+          // ── Look up known solutions from previous successful fixes ──────────
+          const knownSolutions = await this.failureLearner.getKnownSolutions(
+            (currentErrorSignature || errorsToFix[0]) ?? '',
+            codeContext.framework,
+          );
+          if (knownSolutions.length > 0) {
+            this.logger.log(`Found ${knownSolutions.length} known solution(s) for this error type`);
+            // Prepend known solutions to errorsToFix so they appear in the fix prompt
+            errorsToFix = [
+              `KNOWN SOLUTIONS FROM PREVIOUS FIXES:\n${knownSolutions.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+              ...errorsToFix,
+            ];
+          }
+
+          // ── Expand context: diagnosis-identified files + grep source for context hooks ──
+          // Previously only files the AI touched were loaded. Now we also load:
+          // 1. Files the diagnosis identified as root cause
+          // 2. All source files that call context hooks (useTheme, useContext, etc.)
+          //    so the AI can see which ones are missing "use client"
+
+          const addFileToCtx = (filePath: string, label: string) => {
+            if (filesForFix.some(f => f.filePath === filePath)) return;
+            if (!localWorkdirForFix) return;
+            const fullPath = path.join(localWorkdirForFix, 'workspace', 'repo', filePath);
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+              const content = fs.readFileSync(fullPath, 'utf8');
+              if (content) {
+                filesForFix.push({ filePath, content });
+                this.logger.log(`Added ${label} file to fix context: ${filePath}`);
+              }
+            }
+          };
+
+          // Step 1: add diagnosis-identified root-cause files
+          for (const diagFile of diagnosis.affectedFiles) {
+            addFileToCtx(diagFile, 'diagnosis-identified');
+          }
+
+          // ── FULL SOURCE SCAN: load all source files from key dirs ──────────────
+          // This gives AI complete visibility into the repo, not just changed files
+          if (localWorkdirForFix) {
+            const repoRoot = path.join(localWorkdirForFix, 'workspace', 'repo');
+            const FULL_SCAN_DIRS = ['src', 'app', 'components', 'lib', 'hooks', 'providers', 'context', 'store', 'stores', 'utils', 'types'];
+            const MAX_FILE_SIZE = 50_000; // 50KB — skip huge files
+            const MAX_TOTAL_FILES = 80;   // cap to avoid token overflow
+
+            const fullScanFiles: Array<{ filePath: string; content: string }> = [];
+
+            const walkFull = (dir: string, prefix: string) => {
+              if (!fs.existsSync(dir)) return;
+              if (fullScanFiles.length >= MAX_TOTAL_FILES) return;
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (['node_modules', '.git', '.next', 'dist', 'build', '.cache', 'coverage', 'example-ui'].includes(entry.name)) continue;
+                const rel = path.join(prefix, entry.name).replace(/\\/g, '/');
+                const fullEntryPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  walkFull(fullEntryPath, rel);
+                } else if (/\.(tsx?|jsx?|css|json)$/.test(entry.name) && !filesForFix.some(f => f.filePath === rel)) {
+                  try {
+                    const stat = fs.statSync(fullEntryPath);
+                    if (stat.size <= MAX_FILE_SIZE) {
+                      const content = fs.readFileSync(fullEntryPath, 'utf8');
+                      if (content) fullScanFiles.push({ filePath: rel, content });
+                    }
+                  } catch { /* skip unreadable */ }
+                }
+              }
+            };
+
+            for (const srcDir of FULL_SCAN_DIRS) {
+              walkFull(path.join(repoRoot, srcDir), srcDir);
+              if (fullScanFiles.length >= MAX_TOTAL_FILES) break;
+            }
+
+            // Add to filesForFix — AI now has full visibility
+            filesForFix.push(...fullScanFiles);
+
+            this.logger.log(`Full source scan: added ${fullScanFiles.length} source files to fix context (total: ${filesForFix.length})`);
+          }
+
+          // Step 2: for runtime/static-gen/context errors, scan src/ for files that use
+          // context hooks. The compiled chunk stack trace is useless; greping source is reliable.
+          // Also scan generated files (changedFiles) for Html imports and missing "use client".
+          if (
+            localWorkdirForFix &&
+            (diagnosis.errorType === 'runtime' ||
+             diagnosis.errorType === 'static-generation' ||
+             diagnosis.errorType === 'hydration' ||
+             testResult.output.includes('useContext') ||
+             testResult.output.includes('Cannot read properties of null') ||
+             testResult.output.includes('_document'))
+          ) {
+            const repoRoot = path.join(localWorkdirForFix, 'workspace', 'repo');
+            const srcDirs = ['src/app', 'src/components', 'src/providers', 'src/context', 'app', 'components'];
+            const contextHookPattern = /use[A-Z]\w*(Theme|Context|Store|Mode|Dark|Light)/;
+            const htmlDocImportPattern = /from ['"]next\/document['"]/;
+
+            // Grep all generated + adjacent files for violations and log them explicitly
+            // so the diagnosis prompt has concrete evidence to work with
+            const violations: string[] = [];
+
+            const scanFile = (rel: string, fullEntryPath: string) => {
+              if (!/\.(tsx?|jsx?)$/.test(rel)) return;
+              try {
+                const content = fs.readFileSync(fullEntryPath, 'utf8');
+                const hasHtmlImport = htmlDocImportPattern.test(content);
+                const hasContextHook = contextHookPattern.test(content);
+                const hasUseClient = content.includes('"use client"') || content.includes("'use client'");
+
+                if (hasHtmlImport) {
+                  violations.push(`${rel}: imports from next/document (App Router violation)`);
+                }
+                if (hasContextHook && !hasUseClient) {
+                  violations.push(`${rel}: calls context hook without "use client"`);
+                }
+
+                if ((hasContextHook || hasHtmlImport) && !filesForFix.some(f => f.filePath === rel)) {
+                  filesForFix.push({ filePath: rel, content });
+                  this.logger.log(`Added context-hook/doc-import file to fix context: ${rel}`);
+                }
+              } catch { /* skip unreadable files */ }
+            };
+
+            const walkAndScan = (dir: string, prefix: string) => {
+              if (!fs.existsSync(dir)) return;
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (['node_modules', '.git', '.next', 'dist', 'build'].includes(entry.name)) continue;
+                const rel = path.join(prefix, entry.name).replace(/\\/g, '/');
+                const fullEntryPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  walkAndScan(fullEntryPath, rel);
+                } else {
+                  scanFile(rel, fullEntryPath);
+                }
+              }
+            };
+
+            for (const srcDir of srcDirs) {
+              walkAndScan(path.join(repoRoot, srcDir), srcDir);
+            }
+
+            if (violations.length > 0) {
+              this.logger.warn(
+                `Static-gen violations found in source:\n${violations.join('\n')}`,
+              );
+              // Inject violations into errorsToFix so the AI fix prompt has concrete targets
+              for (const v of violations) {
+                if (!errorsToFix.includes(v)) errorsToFix.push(v);
+              }
+            }
+          }
+
+          // ── Phase 2: Fix — armed with diagnosis, AI modifies only the right files ──
           // Ask CodingAgent to fix ALL errors holistically in one call
           const fixes = await this.codingAgent.fixBuildErrors(
             errorsToFix,
@@ -490,9 +678,23 @@ export class AICodingWorker extends WorkerHost {
             repoFileTree,
             codeContext,
             aiOutputLanguage,
-            testResult.output, // pass full build output for maximum context
-            rulebookRules,     // pass tech stack rules to guide the fix
+            testResult.output,
+            rulebookRules,
+            diagnosis,
           );
+
+          // Bug 1: Guard against AI returning no fixes — skip rebuild to avoid wasted attempt
+          if (fixes.length === 0) {
+            this.logger.warn(`Fix attempt ${fixAttempts}: AI returned no fixes — skipping rebuild`);
+            // Force a different strategy on next attempt by clearing error signature cache
+            lastErrorSignature = '';
+            lastSameErrorCount = 0;
+            // Count this as a failed attempt toward MAX_FIX_ATTEMPTS
+            if (fixAttempts >= MAX_FIX_ATTEMPTS) {
+              throw new Error(`AI không thể tạo code sửa lỗi sau ${MAX_FIX_ATTEMPTS} lần thử.`);
+            }
+            continue; // skip rebuild, go to next fix attempt
+          }
 
           // Write fixed/created files back to sandbox
           for (const fix of fixes) {
@@ -521,6 +723,20 @@ export class AICodingWorker extends WorkerHost {
             this.logger.log(`Applied AI fix (${fix.type}) to ${fix.filePath} (attempt ${fixAttempts})`);
           }
 
+          // Bug 3: Log confirmation that files were written
+          this.logger.log(`Fix attempt ${fixAttempts}: wrote ${fixes.length} file(s): ${fixes.map(f => f.filePath).join(', ')}`);
+
+          // Record this fix attempt for future learning (async, best-effort)
+          void this.failureLearner.recordFailure({
+            taskId,
+            organizationId,
+            errorSignature: (currentErrorSignature || errorsToFix[0]?.substring(0, 200)) ?? '',
+            framework: codeContext.framework,
+            attemptedFix: fixes.map(f => `${f.type} ${f.filePath}`).join(', '),
+            buildOutput: testResult.output,
+            affectedFiles: fixes.map(f => f.filePath),
+          });
+
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
             currentStep: `Chạy lại kiểm tra (lần ${fixAttempts + 1}/${MAX_FIX_ATTEMPTS})`,
           });
@@ -528,6 +744,19 @@ export class AICodingWorker extends WorkerHost {
       }
 
       this.logger.log(`Build checks passed for task ${taskId}, proceeding to commit`);
+
+      // Record success for future learning if fixes were needed (async, best-effort)
+      if (fixAttempts > 0) {
+        void this.failureLearner.recordSuccess({
+          taskId,
+          organizationId,
+          errorSignature: lastErrorSignature || '',
+          framework: ((await this.prisma.projectAnalysis.findFirst({ where: { projectId } }))?.frameworks ?? ['unknown'])[0] ?? 'unknown',
+          successfulFix: `Fixed after ${fixAttempts} attempt(s), changed files: ${changedFiles.slice(0, 10).join(', ')}`,
+          filesFixed: changedFiles,
+          attemptsNeeded: fixAttempts,
+        });
+      }
 
       // ── Step 9: Transition → REVIEWING, commit & push ────────────────────
       await this.aiTasksService.transitionStatus(taskId, AITaskStatus.REVIEWING, organizationId, {
@@ -723,7 +952,11 @@ AI-Task-Id: ${taskId}`;
         line.includes('is not assignable') ||
         line.includes('does not exist') ||
         line.includes('Module not found') ||
-        line.includes('You\'re importing a component');
+        line.includes('You\'re importing a component') ||
+        line.includes('should not be imported outside') ||
+        line.includes('TypeError:') ||
+        line.includes('useContext') ||
+        line.includes('Cannot read properties');
 
       if (isError) {
         // Strip line:col numbers to normalise across minor edits
