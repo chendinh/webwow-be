@@ -127,29 +127,44 @@ export class KnowledgeService {
   }
 
   /**
-   * Returns true if a knowledge analysis job is already running for the project,
-   * either by DB record status or by an active/waiting BullMQ job.
+   * Returns true if a knowledge analysis job is already running for the project.
+   * Strategy: check DB first (cheap), only query BullMQ if DB says RUNNING (to auto-heal stale records).
    */
   private async checkRunning(projectId: string): Promise<boolean> {
-    // Check the DB record first
     const record = await this.prisma.knowledgeAnalysis.findUnique({
       where: { projectId },
-      select: { analysisStatus: true },
+      select: { analysisStatus: true, updatedAt: true },
     });
 
-    if (record?.analysisStatus === 'RUNNING') {
-      return true;
+    // Not RUNNING in DB — allow new job
+    if (record?.analysisStatus !== 'RUNNING') {
+      return false;
     }
 
-    // Check BullMQ for waiting or active jobs with the same projectId
+    // DB says RUNNING — verify with BullMQ (3 Redis calls, only on conflict path)
     const queue = this.queueService.getKnowledgeQueue();
-    const [waitingJobs, activeJobs] = await Promise.all([
+    const [waitingJobs, activeJobs, delayedJobs] = await Promise.all([
       queue.getWaiting(),
       queue.getActive(),
+      queue.getDelayed(),
     ]);
 
-    const allJobs = [...waitingJobs, ...activeJobs];
-    return allJobs.some((job) => job.data?.projectId === projectId);
+    const hasLiveJob = [...waitingJobs, ...activeJobs, ...delayedJobs]
+      .some((job) => job.data?.projectId === projectId);
+
+    if (!hasLiveJob) {
+      // Stale RUNNING record — auto-heal (server crash / restart mid-flight)
+      await this.prisma.knowledgeAnalysis.update({
+        where: { projectId },
+        data: {
+          analysisStatus: 'FAILED',
+          lastErrorMessage: 'Phân tích bị gián đoạn (server restart). Vui lòng thử lại.',
+        },
+      });
+      return false;
+    }
+
+    return true;
   }
 
   /**

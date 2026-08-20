@@ -34,6 +34,21 @@ import { KnowledgeModule } from '../ai/knowledge/knowledge.module';
                 rejectUnauthorized: false,
               },
             } : {}),
+            // Reduce keepalive polling to cut Redis request count on Upstash free tier
+            enableOfflineQueue: false,
+            lazyConnect: true,
+          },
+          // Increase stalled job check interval from default 30s → 5 minutes
+          // Each worker polls ALL queues on this interval — 7 queues × default 30s = ~840 Redis ops/hour at idle
+          // At 5 min interval: ~84 ops/hour at idle — 10× reduction
+          stalledInterval: 5 * 60 * 1000, // 5 minutes
+          maxStalledCount: 1,
+          // Default job options applied to all queues
+          defaultJobOptions: {
+            removeOnComplete: 50,   // keep last 50 completed jobs (default: keep all = unbounded)
+            removeOnFail: 100,      // keep last 100 failed jobs for debugging
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 5000 },
           },
         };
       },

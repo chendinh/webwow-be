@@ -423,31 +423,65 @@ export class GithubService {
     const { Octokit } = await import('@octokit/rest');
     const octokit = new Octokit({ auth: token });
 
-    // 1. Create an empty tree
-    const { data: emptyTree } = await octokit.request(
-      'POST /repos/{owner}/{repo}/git/trees',
-      { owner, repo, tree: [] },
+    // 1. Create a blob for the placeholder file
+    // GitHub API rejects empty trees (422), so we need at least one file.
+    const { data: blob } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/blobs',
+      {
+        owner,
+        repo,
+        content: '# AI Architecture Knowledge Branch\n\nThis branch is managed automatically by WebWow AI.\n',
+        encoding: 'utf-8',
+      },
     );
 
-    // 2. Create an orphan commit (no parents)
+    // 2. Create a tree with the placeholder file
+    const { data: tree } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/trees',
+      {
+        owner,
+        repo,
+        tree: [
+          {
+            path: 'README.md',
+            mode: '100644',
+            type: 'blob',
+            sha: blob.sha,
+          },
+        ],
+      },
+    );
+
+    // 3. Create an orphan commit (no parents)
     const { data: orphanCommit } = await octokit.request(
       'POST /repos/{owner}/{repo}/git/commits',
       {
         owner,
         repo,
         message: 'ai: initialize knowledge branch',
-        tree: emptyTree.sha,
+        tree: tree.sha,
         parents: [],
       },
     );
 
-    // 3. Create the branch ref pointing to the orphan commit
-    await octokit.request('POST /repos/{owner}/{repo}/git/refs', {
-      owner,
-      repo,
-      ref: `refs/heads/${branchName}`,
-      sha: orphanCommit.sha,
-    });
+    // 4. Create the branch ref pointing to the orphan commit
+    try {
+      await octokit.request('POST /repos/{owner}/{repo}/git/refs', {
+        owner,
+        repo,
+        ref: `refs/heads/${branchName}`,
+        sha: orphanCommit.sha,
+      });
+    } catch (err: unknown) {
+      // 422 "Reference already exists" — branch was created by a previous attempt, ignore
+      if (
+        typeof err === 'object' && err !== null &&
+        'status' in err && (err as { status: number }).status === 422
+      ) {
+        return; // branch already exists — that's fine
+      }
+      throw err;
+    }
   }
 
   /**
@@ -593,10 +627,9 @@ export class GithubService {
     const octokit = new Octokit({ auth: token });
 
     try {
-      const encodedBranch = encodeURIComponent(branch);
       const { data } = await octokit.request(
         'GET /repos/{owner}/{repo}/git/ref/{ref}',
-        { owner, repo, ref: `heads/${encodedBranch}` },
+        { owner, repo, ref: `heads/${branch}` },
       );
       return data.object.sha;
     } catch (err: unknown) {
