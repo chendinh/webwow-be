@@ -27,7 +27,16 @@ NEXT.JS APP ROUTER RULES (strictly enforced — violations cause build failures)
 6. Hooks (useState, useContext, useEffect) belong in files marked "use client" only
 7. "use client" must be the FIRST line of the file (before any imports)
 8. NEVER import Html, Head, Main, NextScript from "next/document" in the App Router (src/app/) — those are Pages Router only. Use plain <html> and <body> tags directly in layout.tsx
-9. TypeError: Cannot read properties of null (reading 'useContext') during build = a Context hook (useTheme, useContext, etc.) is being called in a Server Component or at module level. Fix: ensure the component calling the hook has "use client" at the top, and is only rendered inside the matching Provider`,
+9. TypeError: Cannot read properties of null (reading 'useContext') during build = a Context hook (useTheme, useContext, etc.) is being called in a Server Component or at module level. Fix: ensure the component calling the hook has "use client" at the top, and is only rendered inside the matching Provider
+10. ZUSTAND PERSIST + SSR: localStorage is undefined on the server during static generation. ALWAYS guard:
+    storage: createJSONStorage(() => {
+      if (typeof window === 'undefined') return { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+      return localStorage;
+    }),
+    skipHydration: true,
+    Without this guard, next build will crash with "Cannot read properties of null (reading 'useContext')"
+11. ThemeProvider must use mounted guard: const [mounted, setMounted] = useState(false); useEffect(() => setMounted(true), []); if (!mounted) return <>{children}</>;
+12. For flash-of-unstyled-theme prevention: add inline <script dangerouslySetInnerHTML> directly in layout.tsx body tag — NOT in a separate component with "use client"`,
 
   'react': `
 REACT RULES:
@@ -233,6 +242,22 @@ CRITICAL FRAMEWORK RULES (apply these regardless of what the error says):
 - Zustand hooks (useXxxStore) only in Client Components, never in Server Components
 - TypeError: Cannot read properties of null (reading 'useContext') = a hook is called in a Server Component. The component calling useTheme/useContext MUST have "use client" at top, AND must be rendered inside its Provider. Never call context hooks in Server Components or at module-load time.
 - If you introduced a ThemeProvider or context: ensure (1) the Provider file has "use client", (2) any component using useContext/useTheme has "use client", (3) layout.tsx does NOT have "use client" — it wraps the Provider as a Server Component
+
+ZUSTAND PERSIST + SSR RULES (this is the most common cause of useContext crash during static generation):
+- WRONG: storage: createJSONStorage(() => localStorage)  ← crashes on server where window is undefined
+- RIGHT: Guard localStorage access:
+    storage: createJSONStorage(() => {
+      if (typeof window === 'undefined') return { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+      return localStorage;
+    }),
+    skipHydration: true,
+- WRONG: ThemeProvider calls useThemeStore() and renders DOM immediately
+- RIGHT: Use mounted guard to prevent hydration mismatch:
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => { setMounted(true); }, []);
+    if (!mounted) return <>{children}</>;
+- For theme flash prevention: put inline <script> directly in layout.tsx (Server Component), NOT in a separate ThemeScript component with "use client"
+- Inline script in layout.tsx: <script dangerouslySetInnerHTML={{ __html: \`(function(){var t=localStorage.getItem('theme-storage');try{var p=JSON.parse(t||'{}');if(p.state&&p.state.theme==='light')document.documentElement.classList.remove('dark');else document.documentElement.classList.add('dark');}catch(e){document.documentElement.classList.add('dark');}})();\` }} />
 ${diagnosisSection}
 BUILD ERRORS TO FIX:
 ${errorSection}${fullOutputSection}

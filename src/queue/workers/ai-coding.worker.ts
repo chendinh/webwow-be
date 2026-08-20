@@ -547,9 +547,14 @@ export class AICodingWorker extends WorkerHost {
             `newErrCount=${newErrorsForFix.length}`,
           );
 
-          if (sameErrorCount >= 4) {
+          // Fail fast when AI is truly stuck: same error 3 attempts in a row with no progress.
+          // Previously this was 4, but that wastes tokens. 3 consecutive identical errors
+          // with no file changes means AI cannot solve this without a fundamentally different
+          // approach (e.g. different architecture from planning phase).
+          if (sameErrorCount >= 3) {
             throw new Error(
-              `AI lặp lại lỗi cũ sau ${fixAttempts} lần sửa mà không có tiến triển. Lỗi: ${newErrorsForFix.slice(0, 2).map(e => e.substring(0, 120)).join('; ')}`,
+              `AI lặp lại lỗi cũ ${sameErrorCount} lần liên tiếp mà không có tiến triển. ` +
+              `Cần kiểm tra lại kế hoạch triển khai. Lỗi: ${newErrorsForFix.slice(0, 2).map(e => e.substring(0, 120)).join('; ')}`,
             );
           }
           // Log the actual error signatures for debugging
@@ -795,8 +800,8 @@ export class AICodingWorker extends WorkerHost {
                 `size=${fix.content.length}B (docker mode)`,
               );
             }
-            // Track new files so they get committed
-            if (fix.type === 'CREATE' && !changedFiles.includes(fix.filePath)) {
+            // Track ALL files touched by fix loop so they get committed (CREATE and MODIFY)
+            if (!changedFiles.includes(fix.filePath)) {
               changedFiles.push(fix.filePath);
             }
             this.logger.log(`Applied AI fix (${fix.type}) to ${fix.filePath} (attempt ${fixAttempts})`);

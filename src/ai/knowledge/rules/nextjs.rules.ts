@@ -57,6 +57,45 @@ When layout.tsx needs both metadata AND client state (e.g. theme):
 ✓ RIGHT: import { persist, createJSONStorage } from 'zustand/middleware'
 ✗ WRONG: Importing a Zustand store hook (useXxxStore) in a Server Component or layout.tsx
 ✓ RIGHT: Zustand hooks only in Client Components marked "use client"
+
+── ZUSTAND PERSIST + SSR / STATIC GENERATION (CRITICAL) ──
+✗ WRONG: Using localStorage/sessionStorage directly in persist storage config at module level
+  This causes: TypeError: Cannot read properties of null (reading 'useContext') during next build static generation
+✓ RIGHT: Always guard localStorage access to avoid SSR crash:
+  const useThemeStore = create(persist(
+    (set) => ({ theme: 'dark', setTheme: (t) => set({ theme: t }) }),
+    {
+      name: 'theme-storage',
+      storage: createJSONStorage(() => {
+        if (typeof window === 'undefined') return { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+        return localStorage;
+      }),
+      skipHydration: true,
+    }
+  ));
+
+✗ WRONG: Calling useThemeStore() directly in ThemeProvider render without hydration guard
+✓ RIGHT: Use useEffect + useState to prevent SSR mismatch:
+  function ThemeProvider({ children }) {
+    const [mounted, setMounted] = useState(false);
+    const theme = useThemeStore(s => s.theme);
+    useEffect(() => { setMounted(true); }, []);
+    useEffect(() => {
+      if (!mounted) return;
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+    }, [theme, mounted]);
+    if (!mounted) return <>{children}</>; // avoid hydration mismatch
+    return <>{children}</>;
+  }
+
+✗ WRONG: Theme toggle component reads store without mounted guard
+✓ RIGHT: Always check mounted state before rendering theme-dependent UI
+
+── THEME SCRIPT FOR FLASH PREVENTION ──
+✗ WRONG: Using <script dangerouslySetInnerHTML> inside a "use client" component
+✓ RIGHT: Inline script goes in Server Component layout.tsx as:
+  <script dangerouslySetInnerHTML={{ __html: \`(function(){var t=localStorage.getItem('theme-storage');if(t){var p=JSON.parse(t);if(p.state&&p.state.theme==='light')document.documentElement.classList.remove('dark');else document.documentElement.classList.add('dark');}else{document.documentElement.classList.add('dark');}})()\` }} />
+  This runs before React hydrates — no ThemeScript component needed.
 `;
 
 export const NEXTJS_ANALYSIS_RULES = `
