@@ -13,6 +13,7 @@ import {
 import { RulebookService } from '../../ai/knowledge/rulebook.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
 import { ProjectAnalysisJobData } from '../queue.types';
+import { QueueService } from '../../queue/queue.service';
 
 // ─── Secret masking patterns ──────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ export class ProjectAnalysisWorker extends WorkerHost {
     private readonly githubService: GithubService,
     private readonly compatibilityScorer: CompatibilityScorerService,
     private readonly rulebookService: RulebookService,
+    private readonly queueService: QueueService,
   ) {
     super();
   }
@@ -394,6 +396,20 @@ export class ProjectAnalysisWorker extends WorkerHost {
         where: { id: projectId },
         data: { status: 'ACTIVE' },
       });
+
+      // ── Step 10b: Enqueue knowledge analysis ─────────────────────────────────
+      try {
+        await this.queueService.enqueueKnowledgeAnalysis({
+          projectId,
+          organizationId,
+          forceReanalysis: false,
+          triggeredBy: 'system',
+        });
+        this.logger.log(`Knowledge analysis enqueued for project ${projectId}`);
+      } catch (enqueueErr) {
+        // Failure to enqueue knowledge analysis must NOT fail the project analysis job
+        this.logger.warn(`Failed to enqueue knowledge analysis for project ${projectId}: ${String(enqueueErr)}`);
+      }
 
       // ── Step 10: Log ActivityLog entry ────────────────────────────────────
       await this.prisma.activityLog.create({

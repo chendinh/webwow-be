@@ -1,8 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { ZodError } from 'zod';
 import { AI_PROVIDER, IAIProvider } from '../providers/ai-provider.interface';
 import { CodingPrompt } from '../prompts/coding.prompt';
 import { ImplementationPlan, ImplementationStep } from '../schemas/implementation-plan.schema';
+import { KnowledgeContext } from '../agents/knowledge-reader.agent';
 
 export interface CodeChange {
   filePath: string;
@@ -29,13 +29,17 @@ export class CodingAgent {
     context: { framework: string; language: string },
     aiOutputLanguage = 'en',
     rulebookRules = '',
+    knowledgeContext?: KnowledgeContext | null,
   ): Promise<CodeChange> {
     if (step.type === 'DELETE') {
       return { filePath: step.filePath, content: '', type: 'DELETE' };
     }
 
     const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
-    const userPrompt = CodingPrompt.buildUser(step, existingContent, context);
+    const baseUserPrompt = CodingPrompt.buildUser(step, existingContent, context);
+    const userPrompt = knowledgeContext
+      ? `${knowledgeContext.promptSection}\n\n---\n\n${baseUserPrompt}`
+      : baseUserPrompt;
 
     this.logger.log(`Implementing ${step.type} for: ${step.filePath}`);
 

@@ -91,6 +91,14 @@ enum PullRequestStatus {
   MERGED
 }
 
+enum KnowledgeAnalysisStatus {
+  PENDING
+  RUNNING
+  COMPLETE
+  PARTIAL
+  FAILED
+}
+
 enum ActivityEventType {
   STATE_CHANGE
   AI_CALL
@@ -226,6 +234,7 @@ model Project {
 
   organization         Organization    @relation(fields: [organizationId], references: [id])
   analysis             ProjectAnalysis?
+  knowledgeAnalysis    KnowledgeAnalysis?
   issues               Issue[]
   aiTasks              AITask[]
   pullRequests         PullRequest[]
@@ -272,6 +281,25 @@ model ProjectAnalysis {
   updatedAt          DateTime          @updatedAt
 
   project            Project           @relation(fields: [projectId], references: [id])
+
+  @@index([organizationId])
+  @@index([projectId])
+}
+
+model KnowledgeAnalysis {
+  id                  String                  @id @default(uuid())
+  projectId           String                  @unique
+  organizationId      String
+
+  analysisStatus      KnowledgeAnalysisStatus @default(PENDING)
+  lastAnalyzedCommit  String?
+  lastAnalyzedAt      DateTime?
+  lastErrorMessage    String?
+
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  project             Project                 @relation(fields: [projectId], references: [id])
 
   @@index([organizationId])
   @@index([projectId])

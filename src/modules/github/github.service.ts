@@ -410,6 +410,209 @@ export class GithubService {
   }
 
   /**
+   * Creates an orphan branch (no parent commit) on the given repository.
+   * Used to initialise the knowledge branch with an empty history.
+   */
+  async createOrphanBranch(
+    organizationId: string,
+    owner: string,
+    repo: string,
+    branchName: string,
+  ): Promise<void> {
+    const token = await this.getDecryptedToken(organizationId);
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    // 1. Create an empty tree
+    const { data: emptyTree } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/trees',
+      { owner, repo, tree: [] },
+    );
+
+    // 2. Create an orphan commit (no parents)
+    const { data: orphanCommit } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/commits',
+      {
+        owner,
+        repo,
+        message: 'ai: initialize knowledge branch',
+        tree: emptyTree.sha,
+        parents: [],
+      },
+    );
+
+    // 3. Create the branch ref pointing to the orphan commit
+    await octokit.request('POST /repos/{owner}/{repo}/git/refs', {
+      owner,
+      repo,
+      ref: `refs/heads/${branchName}`,
+      sha: orphanCommit.sha,
+    });
+  }
+
+  /**
+   * Fetches the decoded content of a file from a specific ref.
+   * Returns null when the file does not exist (404).
+   */
+  async getFileContent(
+    organizationId: string,
+    owner: string,
+    repo: string,
+    filePath: string,
+    ref: string,
+  ): Promise<string | null> {
+    const token = await this.getDecryptedToken(organizationId);
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    try {
+      const { data } = await octokit.request(
+        'GET /repos/{owner}/{repo}/contents/{path}',
+        { owner, repo, path: filePath, ref },
+      );
+
+      // The response may be a directory listing (array) — guard against that
+      if (Array.isArray(data) || data.type !== 'file') {
+        return null;
+      }
+
+      return Buffer.from(data.content, 'base64').toString('utf8');
+    } catch (err: unknown) {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'status' in err &&
+        (err as { status: number }).status === 404
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Returns the list of file paths changed between two commits.
+   * Returns an empty array when no files are reported by the API.
+   */
+  async getCommitDiff(
+    organizationId: string,
+    owner: string,
+    repo: string,
+    baseCommit: string,
+    headCommit: string,
+  ): Promise<string[]> {
+    const token = await this.getDecryptedToken(organizationId);
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    const { data } = await octokit.request(
+      'GET /repos/{owner}/{repo}/compare/{basehead}',
+      { owner, repo, basehead: `${baseCommit}...${headCommit}` },
+    );
+
+    return data.files?.map((f: { filename: string }) => f.filename) ?? [];
+  }
+
+  /**
+   * Deletes one or more files from a branch in a single commit by building
+   * a new Git tree with those paths set to null (removed).
+   */
+  async deleteFiles(
+    organizationId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+    filePaths: string[],
+    message: string,
+  ): Promise<void> {
+    const token = await this.getDecryptedToken(organizationId);
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    // 1. Get the current HEAD SHA of the branch
+    const { data: refData } = await octokit.request(
+      'GET /repos/{owner}/{repo}/git/ref/{ref}',
+      { owner, repo, ref: `heads/${branch}` },
+    );
+    const latestCommitSha = refData.object.sha;
+
+    // 2. Get the current commit's tree SHA
+    const { data: commitData } = await octokit.request(
+      'GET /repos/{owner}/{repo}/git/commits/{commit_sha}',
+      { owner, repo, commit_sha: latestCommitSha },
+    );
+    const baseTreeSha = commitData.tree.sha;
+
+    // 3. Build a tree where each deleted path has sha: null
+    const treeItems = filePaths.map((path) => ({
+      path,
+      mode: '100644' as const,
+      type: 'blob' as const,
+      sha: null,
+    }));
+
+    // 4. Create the new tree
+    const { data: newTree } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/trees',
+      { owner, repo, base_tree: baseTreeSha, tree: treeItems },
+    );
+
+    // 5. Create a new commit
+    const { data: newCommit } = await octokit.request(
+      'POST /repos/{owner}/{repo}/git/commits',
+      {
+        owner,
+        repo,
+        message,
+        tree: newTree.sha,
+        parents: [latestCommitSha],
+      },
+    );
+
+    // 6. Update the branch reference
+    await octokit.request('PATCH /repos/{owner}/{repo}/git/refs/{ref}', {
+      owner,
+      repo,
+      ref: `heads/${branch}`,
+      sha: newCommit.sha,
+    });
+  }
+
+  /**
+   * Returns the HEAD commit SHA of a branch, or null when the branch does
+   * not exist (404).
+   */
+  async getBranchHeadSha(
+    organizationId: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<string | null> {
+    const token = await this.getDecryptedToken(organizationId);
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    try {
+      const encodedBranch = encodeURIComponent(branch);
+      const { data } = await octokit.request(
+        'GET /repos/{owner}/{repo}/git/ref/{ref}',
+        { owner, repo, ref: `heads/${encodedBranch}` },
+      );
+      return data.object.sha;
+    } catch (err: unknown) {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'status' in err &&
+        (err as { status: number }).status === 404
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Verifies a GitHub webhook signature (HMAC-SHA256).
    * Returns true when the signature matches, false otherwise.
    */

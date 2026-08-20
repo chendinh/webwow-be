@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GithubService } from '../../modules/github/github.service';
 import { AnalysisAgent } from '../../ai/agents/analysis.agent';
+import { KnowledgeReaderAgent } from '../../ai/agents/knowledge-reader.agent';
 import { PlanningAgent } from '../../ai/agents/planning.agent';
 import { PricingService } from '../../modules/pricing/pricing.service';
 import { CONCURRENCY, QUEUES } from '../queue.constants';
@@ -54,6 +55,7 @@ export class AIAnalysisWorker extends WorkerHost {
     private readonly analysisAgent: AnalysisAgent,
     private readonly planningAgent: PlanningAgent,
     private readonly pricingService: PricingService,
+    private readonly knowledgeReaderAgent: KnowledgeReaderAgent,
   ) {
     super();
   }
@@ -106,6 +108,18 @@ export class AIAnalysisWorker extends WorkerHost {
         directoryStructure: rawDirectoryStructure,
       };
 
+      // ── Step 2b: Read knowledge branch context ───────────────────────────
+      const [owner, repo] = (issue.project?.githubRepoFullName ?? '/').split('/');
+      const knowledgeContext = await this.knowledgeReaderAgent.readForAnalysisTask(
+        owner,
+        repo,
+        organizationId,
+        issue.projectId,
+      ).catch((err) => {
+        this.logger.warn(`KnowledgeReaderAgent failed: ${String(err)} — proceeding without context`);
+        return null;
+      });
+
       // ── Step 3: Run AnalysisAgent — identifies affectedFiles ────────────
       const { result: analysisResult, tokensUsed: analysisTokens, costUsd: analysisCost } =
         await this.analysisAgent.analyze(
@@ -117,6 +131,7 @@ export class AIAnalysisWorker extends WorkerHost {
           },
           projectContext,
           language,
+          knowledgeContext,
         );
 
       this.logger.log(

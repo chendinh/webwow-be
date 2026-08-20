@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import { AI_PROVIDER, IAIProvider } from '../providers/ai-provider.interface';
 import { IssueAnalysisPrompt } from '../prompts/issue-analysis.prompt';
 import { AnalysisResultSchema, AnalysisResult } from '../schemas/analysis-result.schema';
+import { KnowledgeContext } from '../agents/knowledge-reader.agent';
 
 export interface AnalysisAgentResult {
   result: AnalysisResult;
@@ -38,9 +39,13 @@ export class AnalysisAgent {
       } | null;
     },
     language = 'en',
+    knowledgeContext?: KnowledgeContext | null,
   ): Promise<AnalysisAgentResult> {
     const systemPrompt = IssueAnalysisPrompt.buildSystem(language);
-    const userPrompt = IssueAnalysisPrompt.buildUser(issue, projectContext);
+    const baseUserPrompt = IssueAnalysisPrompt.buildUser(issue, projectContext);
+    const userPrompt = knowledgeContext
+      ? `${knowledgeContext.promptSection}\n\n---\n\n${baseUserPrompt}`
+      : baseUserPrompt;
 
     this.logger.log(`Starting analysis for issue: ${issue.title}`);
 

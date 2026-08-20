@@ -5,6 +5,7 @@ export const QUEUES = {
   PR_CREATION: 'pr-creation',
   NOTIFICATION: 'notification',
   HEALTH_CHECK: 'health-check',
+  KNOWLEDGE_ANALYSIS: 'knowledge-analysis',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -16,4 +17,5 @@ export const CONCURRENCY = {
   PR_CREATION: 10,
   NOTIFICATION: 10,
   HEALTH_CHECK: 3,
+  KNOWLEDGE_ANALYSIS: 3,
 } as const;

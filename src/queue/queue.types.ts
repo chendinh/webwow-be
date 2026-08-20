@@ -44,3 +44,10 @@ export interface HealthCheckJobData {
   branch: string;
   githubInstallationId: string;
 }
+
+export interface KnowledgeAnalysisJobData {
+  projectId: string;
+  organizationId: string;
+  forceReanalysis: boolean;
+  triggeredBy: 'user' | 'system';
+}

@@ -11,6 +11,7 @@ import { AITasksService } from '../../modules/ai-tasks/ai-tasks.service';
 import { GithubService } from '../../modules/github/github.service';
 import { ActivityService } from '../../modules/activity/activity.service';
 import { CodingAgent } from '../../ai/agents/coding.agent';
+import { KnowledgeReaderAgent } from '../../ai/agents/knowledge-reader.agent';
 import { RulebookService } from '../../ai/knowledge/rulebook.service';
 import { FailureLearnerService } from '../../ai/knowledge/failure-learner.service';
 import { ImplementationPlan } from '../../ai/schemas/implementation-plan.schema';
@@ -35,6 +36,7 @@ export class AICodingWorker extends WorkerHost {
     private readonly codingAgent: CodingAgent,
     private readonly rulebookService: RulebookService,
     private readonly failureLearner: FailureLearnerService,
+    private readonly knowledgeReaderAgent: KnowledgeReaderAgent,
   ) {
     super();
   }
@@ -254,6 +256,18 @@ export class AICodingWorker extends WorkerHost {
       });
       const aiOutputLanguage = org?.aiOutputLanguage ?? 'en';
 
+      // ── Step 6b: Read knowledge branch context ────────────────────────────────
+      const [knowledgeOwner, knowledgeRepo] = project.githubRepoFullName.split('/');
+      const knowledgeContext = await this.knowledgeReaderAgent.readForCodingTask(
+        knowledgeOwner,
+        knowledgeRepo,
+        organizationId,
+        taskId,
+      ).catch((err) => {
+        this.logger.warn(`KnowledgeReaderAgent failed: ${String(err)} — proceeding without context`);
+        return null;
+      });
+
       for (const step of plan.steps) {
         this.logger.debug(`Applying step ${step.order}: ${step.type} ${step.filePath}`);
 
@@ -333,7 +347,7 @@ export class AICodingWorker extends WorkerHost {
         }
 
         // Call CodingAgent to generate actual code
-        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext, aiOutputLanguage, rulebookRules);
+        const codeChange = await this.codingAgent.implementStep(step, existingContent, codeContext, aiOutputLanguage, rulebookRules, knowledgeContext);
         totalCodingTokens += 100; // approximation — CodingAgent doesn't expose tokens yet
 
         // Ensure parent directory exists

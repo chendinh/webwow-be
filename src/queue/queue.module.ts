@@ -9,6 +9,7 @@ import { AIAnalysisWorker } from './workers/ai-analysis.worker';
 import { AICodingWorker } from './workers/ai-coding.worker';
 import { PRCreationWorker } from './workers/pr-creation.worker';
 import { HealthCheckWorker } from './workers/health-check.worker';
+import { KnowledgeAnalysisWorker } from './workers/knowledge-analysis.worker';
 import { ProjectsModule } from '../modules/projects/projects.module';
 import { ActivityModule } from '../modules/activity/activity.module';
 import { GithubModule } from '../modules/github/github.module';
@@ -44,6 +45,7 @@ import { KnowledgeModule } from '../ai/knowledge/knowledge.module';
       { name: QUEUES.PR_CREATION },
       { name: QUEUES.NOTIFICATION },
       { name: QUEUES.HEALTH_CHECK },
+      { name: QUEUES.KNOWLEDGE_ANALYSIS },
     ),
     forwardRef(() => ProjectsModule),
     GithubModule,
@@ -53,7 +55,7 @@ import { KnowledgeModule } from '../ai/knowledge/knowledge.module';
     ActivityModule,
     KnowledgeModule,
   ],
-  providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker, HealthCheckWorker],
+  providers: [QueueService, ProjectAnalysisWorker, AIAnalysisWorker, AICodingWorker, PRCreationWorker, HealthCheckWorker, KnowledgeAnalysisWorker],
   exports: [BullModule, QueueService],
 })
 export class QueueModule {}
