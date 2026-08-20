@@ -694,7 +694,7 @@ export class AICodingWorker extends WorkerHost {
             const walkAndScan = (dir: string, prefix: string) => {
               if (!fs.existsSync(dir)) return;
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                if (['node_modules', '.git', '.next', 'dist', 'build'].includes(entry.name)) continue;
+                if (['node_modules', '.git', '.next', 'dist', 'build', 'example-ui', '__tests__', '__mocks__'].includes(entry.name)) continue;
                 const rel = path.join(prefix, entry.name).replace(/\\/g, '/');
                 const fullEntryPath = path.join(dir, entry.name);
                 if (entry.isDirectory()) {

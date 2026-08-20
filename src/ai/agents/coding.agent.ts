@@ -146,7 +146,10 @@ export class CodingAgent {
       `Context: ${allChangedFiles.length} files, ${repoFileTree.length} repo files`,
     );
 
-    const systemPrompt = CodingPrompt.buildSystem(aiOutputLanguage, context.framework, rulebookRules);
+    // Use a dedicated fix system prompt that enforces JSON array output.
+    // The implementStep system prompt instructs Claude to return raw file content,
+    // which causes prose leakage when temperature is raised on retries.
+    const systemPrompt = CodingPrompt.buildFixSystem(aiOutputLanguage, context.framework, rulebookRules);
     const userPrompt = CodingPrompt.buildFix(newErrors, allChangedFiles, repoFileTree, context, fullBuildOutput, diagnosis, attemptNumber, unchangedFiles);
 
     // Increase temperature on repeated failures so AI explores different solutions

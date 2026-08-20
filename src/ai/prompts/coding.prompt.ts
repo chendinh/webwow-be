@@ -51,6 +51,36 @@ function getFrameworkRules(framework: string): string {
 }
 
 export class CodingPrompt {
+  /**
+   * System prompt specifically for the fix-build-errors path.
+   * Overrides the implementStep system prompt to enforce JSON array output.
+   */
+  static buildFixSystem(language = 'en', framework = '', rulebookRules = ''): string {
+    const rules = rulebookRules || getFrameworkRules(framework);
+    const rulesSection = rules ? `\n${rules}` : '';
+
+    const langInstruction =
+      language !== 'en'
+        ? `\n\nWrite code comments in ${getLanguageName(language)} when adding new comments.`
+        : '';
+
+    return `You are a senior software engineer fixing build errors.${langInstruction}${rulesSection}
+
+Your ONLY job is to return a JSON array of file fixes. NOTHING ELSE.
+
+OUTPUT FORMAT — you MUST return exactly this structure:
+[
+  { "filePath": "src/app/layout.tsx", "type": "MODIFY", "content": "<complete file content>" },
+  { "filePath": "src/components/providers.tsx", "type": "CREATE", "content": "<complete file content>" }
+]
+
+ABSOLUTE RULES:
+- Output ONLY the JSON array — no prose, no markdown fences, no explanation before or after
+- Every "content" field must be the complete file content, not a diff or snippet
+- Your first character MUST be "[" and your last character MUST be "]"
+- If you write ANY text before "[", the entire response is invalid and will be discarded`;
+  }
+
   static buildSystem(language = 'en', framework = '', rulebookRules = ''): string {
     const langInstruction =
       language !== 'en'
