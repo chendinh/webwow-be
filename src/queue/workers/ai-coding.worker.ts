@@ -425,6 +425,19 @@ export class AICodingWorker extends WorkerHost {
             );
           }
 
+          // On subsequent fix attempts the task is already in FIXING state.
+          // The valid cycle is FIXING → TESTING → FIXING, so we transition back
+          // to TESTING first (to reset the state) before entering FIXING again.
+          // On the very first fix attempt the task is in TESTING, so no reset needed.
+          const currentTask = await this.prisma.aITask.findUnique({
+            where: { id: taskId },
+            select: { status: true },
+          });
+          if (currentTask?.status === AITaskStatus.FIXING) {
+            await this.aiTasksService.transitionStatus(taskId, AITaskStatus.TESTING, organizationId, {
+              currentStep: `Chuẩn bị sửa lỗi lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
+            });
+          }
           await this.aiTasksService.transitionStatus(taskId, AITaskStatus.FIXING, organizationId, {
             currentStep: `Sửa lỗi build lần ${fixAttempts}/${MAX_FIX_ATTEMPTS}`,
           });
