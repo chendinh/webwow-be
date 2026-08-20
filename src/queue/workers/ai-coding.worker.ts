@@ -1000,7 +1000,7 @@ AI-Task-Id: ${taskId}`;
   ): Promise<{ passed: boolean; output: string }> {
     const result = await this.sandbox.exec(
       containerId,
-      'cd /workspace/repo && [ -f package.json ] && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1 || echo "NO_BUILD_SCRIPT"',
+      'cd /workspace/repo && [ -f package.json ] && rm -rf .next && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1 || echo "NO_BUILD_SCRIPT"',
       180_000,
     );
     const output = result.stdout ?? '';
@@ -1121,7 +1121,10 @@ AI-Task-Id: ${taskId}`;
         required: false,
       },
       {
-        cmd: 'cd /workspace/repo && [ -f package.json ] && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1',
+        // Clear .next cache before every build to prevent stale compiled chunks
+        // from previous fix attempts from masking real errors (e.g. cached <Html> imports,
+        // stale "use client" boundaries, or old static generation output).
+        cmd: 'cd /workspace/repo && [ -f package.json ] && rm -rf .next && NEXT_TELEMETRY_DISABLED=1 npm run build 2>&1',
         label: 'build',
         required: true, // build MUST pass — catches "use client" errors, type errors, etc.
       },
