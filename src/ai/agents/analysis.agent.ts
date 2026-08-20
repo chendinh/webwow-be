@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ZodError } from 'zod';
 import { AI_PROVIDER, IAIProvider } from '../providers/ai-provider.interface';
 import { IssueAnalysisPrompt } from '../prompts/issue-analysis.prompt';
@@ -17,6 +18,7 @@ export class AnalysisAgent {
 
   constructor(
     @Inject(AI_PROVIDER) private readonly aiProvider: IAIProvider,
+    private readonly configService: ConfigService,
   ) {}
 
   async analyze(
@@ -49,7 +51,10 @@ export class AnalysisAgent {
 
     this.logger.log(`Starting analysis for issue: ${issue.title}`);
 
+    const planningModel = this.configService.get<string>('ai.planningModel');
+
     const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
+      model: planningModel,
       maxTokens: 4096,
       temperature: 0.1,
     });

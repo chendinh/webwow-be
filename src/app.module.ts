@@ -64,6 +64,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
         OPENAI_API_KEY: Joi.string().optional(),
         ANTHROPIC_API_KEY: Joi.string().optional(),
         AI_DEFAULT_MODEL: Joi.string().default('gpt-4o'),
+        AI_PLANNING_MODEL: Joi.string().optional(),
 
         // GitHub
         GITHUB_APP_ID: Joi.string().required(),

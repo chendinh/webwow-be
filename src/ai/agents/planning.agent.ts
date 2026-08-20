@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ZodError } from 'zod';
 import { AI_PROVIDER, IAIProvider } from '../providers/ai-provider.interface';
 import { PlanningPrompt } from '../prompts/planning.prompt';
@@ -17,6 +18,7 @@ export class PlanningAgent {
 
   constructor(
     @Inject(AI_PROVIDER) private readonly aiProvider: IAIProvider,
+    private readonly configService: ConfigService,
   ) {}
 
   async plan(
@@ -33,12 +35,15 @@ export class PlanningAgent {
     const systemPrompt = PlanningPrompt.buildSystem(language);
     const userPrompt = PlanningPrompt.buildUser(issue, analysisResult, fileContents);
 
+    const planningModel = this.configService.get<string>('ai.planningModel');
+
     this.logger.log(
       `Creating implementation plan for: ${issue.title} ` +
-      `(${Object.keys(fileContents).length} files with content)`,
+      `(${Object.keys(fileContents).length} files with content, model: ${planningModel})`,
     );
 
     const response = await this.aiProvider.call<unknown>(systemPrompt, userPrompt, {
+      model: planningModel,
       maxTokens: 4000,
       temperature: 0.1,
     });
