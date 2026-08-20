@@ -41,7 +41,7 @@ class AcceptInviteDto {
 @ApiTags('Members')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/organizations/:organizationId/members')
+@Controller('organizations/:organizationId/members')
 export class MembersController {
   constructor(private readonly organizationsService: OrganizationsService) {}
 
@@ -131,7 +131,7 @@ export class MembersController {
 @ApiTags('Invitations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/invitations')
+@Controller('invitations')
 export class InvitationsController {
   constructor(private readonly organizationsService: OrganizationsService) {}
 

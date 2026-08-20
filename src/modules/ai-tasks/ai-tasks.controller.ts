@@ -24,7 +24,7 @@ import { AITasksService } from './ai-tasks.service';
 @ApiTags('AI Tasks')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/ai-tasks')
+@Controller('ai-tasks')
 export class AITasksController {
   constructor(private readonly aiTasksService: AITasksService) {}
 

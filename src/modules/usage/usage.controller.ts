@@ -17,7 +17,7 @@ import { UsageService, UsageSummary, UsageMonthSummary } from './usage.service';
 @ApiTags('Usage')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/usage')
+@Controller('usage')
 export class UsageController {
   constructor(private readonly usageService: UsageService) {}
 

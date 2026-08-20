@@ -20,7 +20,7 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
 
 ## Tasks
 
-- [ ] 1. Write bug condition exploration test
+- [x] 1. Write bug condition exploration test
   - **Property 1: Bug Condition** - Projects Routes Return 404 on Unfixed Code
   - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
   - **DO NOT attempt to fix the test or the code when it fails**
@@ -38,7 +38,7 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
   - Mark task complete when test is written, run, and failure is documented
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10_
 
-- [ ] 2. Write preservation property tests (BEFORE implementing fix)
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
   - **Property 2: Preservation** - Non-Projects Routes Are Unaffected by the Fix
   - **IMPORTANT**: Follow observation-first methodology — observe actual responses on unfixed code first
   - Observe: `POST /api/auth/login` with correct credentials returns current status on unfixed code
@@ -53,9 +53,9 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
   - Mark task complete when tests are written, run, and passing on unfixed code
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
 
-- [ ] 3. Fix for double `api` prefix in ProjectsController
+- [x] 3. Fix for double `api` prefix in ProjectsController
 
-  - [ ] 3.1 Implement the fix
+  - [x] 3.1 Implement the fix
     - In `src/modules/projects/projects.controller.ts`, change the class-level decorator from `@Controller('api/projects')` to `@Controller('projects')`
     - NestJS will then combine the global prefix `api` (from `main.ts`) with the controller prefix `projects` to produce the correct effective path `/api/projects`
     - Do NOT modify `main.ts` or any other file — this is a single-line change
@@ -65,7 +65,7 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
     - _Preservation: All requests where isBugCondition(X) is false must produce identical responses before and after the fix_
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10_
 
-  - [ ] 3.2 Verify bug condition exploration test now passes
+  - [x] 3.2 Verify bug condition exploration test now passes
     - **Property 1: Expected Behavior** - Projects Routes Resolve Correctly After Fix
     - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
     - The test from task 1 encodes the expected behavior (non-routing-404 status codes for all `/api/projects` requests)
@@ -75,7 +75,7 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
     - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10_
 
-  - [ ] 3.3 Verify preservation tests still pass
+  - [x] 3.3 Verify preservation tests still pass
     - **Property 2: Preservation** - Non-Projects Behavior Unchanged After Fix
     - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
     - Run preservation property tests from step 2 against the fixed code
@@ -84,7 +84,7 @@ Fix the double `api` prefix bug in `ProjectsController` using the exploratory bu
     - Confirm multi-tenant isolation still returns data-driven 404 for cross-organization access
     - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions introduced by the fix)
 
-- [ ] 4. Checkpoint — Ensure all tests pass
+- [x] 4. Checkpoint — Ensure all tests pass
   - Run the full test suite (`npm run test` or `npm run test:e2e`) and confirm all tests pass
   - Confirm Property 1 (bug condition exploration test) now passes — routing 404s are gone
   - Confirm Property 2 (preservation tests) still passes — no regressions

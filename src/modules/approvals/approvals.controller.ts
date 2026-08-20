@@ -26,7 +26,7 @@ import { ApproveIssueDto, RejectIssueDto } from './dto';
 @ApiTags('Approvals')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/issues/:issueId')
+@Controller('issues/:issueId')
 export class ApprovalsController {
   constructor(private readonly approvalsService: ApprovalsService) {}
 

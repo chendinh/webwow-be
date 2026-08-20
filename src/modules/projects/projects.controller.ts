@@ -29,7 +29,7 @@ import { UpdateProjectDto } from './dto/update-project.dto';
 @ApiTags('Projects')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/projects')
+@Controller('projects')
 export class ProjectsController {
   constructor(private readonly projectsService: ProjectsService) {}
 

@@ -26,7 +26,7 @@ interface ResolveIssueBody {
 
 // ─── Controller ───────────────────────────────────────────────────────────────
 
-@Controller('api/system')
+@Controller('system')
 @UseGuards(JwtAuthGuard)
 export class SystemHealthController {
   constructor(private readonly systemHealthService: SystemHealthService) {}

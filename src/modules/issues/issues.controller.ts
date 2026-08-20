@@ -31,7 +31,7 @@ import { TaskSummaryDto } from './dto/task-summary.dto';
 @ApiTags('Issues')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/projects/:projectId/issues')
+@Controller('projects/:projectId/issues')
 export class IssuesController {
   constructor(private readonly issuesService: IssuesService) {}
 

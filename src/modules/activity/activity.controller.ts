@@ -12,7 +12,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { ActivityService } from './activity.service';
 import { ActivityLog } from '@prisma/client';
 
-@Controller('api/activity')
+@Controller('activity')
 @UseGuards(JwtAuthGuard)
 export class ActivityController {
   constructor(private readonly activityService: ActivityService) {}

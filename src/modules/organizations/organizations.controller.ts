@@ -27,7 +27,7 @@ import { CreateOrganizationDto, UpdateOrganizationDto } from './dto';
 @ApiTags('Organizations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('api/organizations')
+@Controller('organizations')
 export class OrganizationsController {
   constructor(private readonly organizationsService: OrganizationsService) {}
 
